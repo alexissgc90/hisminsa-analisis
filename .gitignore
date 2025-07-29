@@ -1,0 +1,43 @@
+# Archivos de datos sensibles
+MaestroPaciente*.csv
+MaestroPersonal*.csv
+MaestroRegistrador*.csv
+consolidado*.csv
+Consolidado*.csv
+
+# Carpetas de datos
+01-07-2025/
+02-07-2025/
+03-07-2025/
+*/consolidado*.csv
+
+# Archivos de Excel temporales
+~$*.xlsx
+
+# Archivos de Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs y temporales
+*.log
+*.tmp
+temp/
+tmp/
