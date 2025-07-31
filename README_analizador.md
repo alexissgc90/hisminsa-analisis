@@ -49,9 +49,9 @@ python analizar_atenciones.py
 El programa espera encontrar los siguientes archivos en el mismo directorio:
 ```
 📁 consolidado 01-07-2025 al 03-07-2025/
-├── MaestroPaciente952732.csv
-├── MaestroPersonal951318.csv
-├── MaestroRegistrador952399.csv
+├── MaestroPaciente.csv
+├── MaestroPersonal.csv
+├── MaestroRegistrador.csv
 ├── 📁 01-07-2025/
 │   └── consolidado 01-07-2025.csv
 └── analizar_atenciones.py

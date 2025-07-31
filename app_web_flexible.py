@@ -13,7 +13,34 @@ from datetime import datetime
 import os
 import io
 import warnings
+import base64
+import json
 warnings.filterwarnings('ignore', category=UserWarning)
+
+# Importar módulos de indicadores
+from indicadores_adulto import (
+    INDICADORES_ADULTO, 
+    PAQUETE_INTEGRAL_ADULTO,
+    verificar_cumplimiento_indicador as verificar_indicador_adulto,
+    calcular_estadisticas_indicador as calcular_stats_adulto,
+    verificar_paquete_integral as verificar_paquete_adulto
+)
+
+from indicadores_joven import (
+    INDICADORES_JOVEN,
+    PAQUETE_INTEGRAL_JOVEN,
+    verificar_cumplimiento_indicador as verificar_indicador_joven,
+    calcular_estadisticas_indicador as calcular_stats_joven,
+    verificar_paquete_integral as verificar_paquete_joven
+)
+
+from indicadores_adulto_mayor import (
+    INDICADORES_ADULTO_MAYOR,
+    PAQUETE_INTEGRAL_ADULTO_MAYOR,
+    verificar_cumplimiento_indicador as verificar_indicador_adulto_mayor,
+    calcular_estadisticas_indicador as calcular_stats_adulto_mayor,
+    verificar_paquete_integral as verificar_paquete_adulto_mayor
+)
 
 # Configuración de la página
 st.set_page_config(
@@ -97,9 +124,9 @@ def verificar_archivos_directorio():
     """Verifica qué archivos maestros están disponibles en el directorio"""
     base_path = os.path.dirname(os.path.abspath(__file__))
     archivos_estado = {
-        'MaestroPaciente952732.csv': os.path.exists(os.path.join(base_path, 'MaestroPaciente952732.csv')),
-        'MaestroPersonal951318.csv': os.path.exists(os.path.join(base_path, 'MaestroPersonal951318.csv')),
-        'MaestroRegistrador952399.csv': os.path.exists(os.path.join(base_path, 'MaestroRegistrador952399.csv'))
+        'MaestroPaciente.csv': os.path.exists(os.path.join(base_path, 'MaestroPaciente.csv')),
+        'MaestroPersonal.csv': os.path.exists(os.path.join(base_path, 'MaestroPersonal.csv')),
+        'MaestroRegistrador.csv': os.path.exists(os.path.join(base_path, 'MaestroRegistrador.csv'))
     }
     return archivos_estado
 
@@ -248,9 +275,9 @@ def cargar_archivos_maestros_directorio():
         base_path = os.path.dirname(os.path.abspath(__file__))
         
         # Cargar archivos maestros
-        df_pacientes = pd.read_csv(os.path.join(base_path, 'MaestroPaciente952732.csv'), encoding='latin-1')
-        df_personal = pd.read_csv(os.path.join(base_path, 'MaestroPersonal951318.csv'), encoding='latin-1')
-        df_registradores = pd.read_csv(os.path.join(base_path, 'MaestroRegistrador952399.csv'), encoding='latin-1')
+        df_pacientes = pd.read_csv(os.path.join(base_path, 'MaestroPaciente.csv'), encoding='latin-1')
+        df_personal = pd.read_csv(os.path.join(base_path, 'MaestroPersonal.csv'), encoding='latin-1')
+        df_registradores = pd.read_csv(os.path.join(base_path, 'MaestroRegistrador.csv'), encoding='latin-1')
         
         # Renombrar columnas
         pacientes_cols = {col: f'pac_{col}' for col in df_pacientes.columns if col != 'Id_Paciente'}
@@ -576,11 +603,27 @@ def crear_filtros_sidebar(df):
         st.sidebar.info(f"Solo hay datos del {fecha_min}")
     
     # Filtro por establecimiento
-    establecimientos = ['Todos'] + sorted(df['Id_Establecimiento'].unique().tolist())
-    establecimiento_sel = st.sidebar.selectbox(
+    # Crear diccionario de código -> nombre
+    estab_codigo_nombre = {}
+    for codigo in df['Id_Establecimiento'].unique():
+        # Convertir código a string y limpiar espacios
+        codigo_str = str(codigo).strip()
+        nombre = df[df['Id_Establecimiento'] == codigo]['Establecimiento_Nombre'].iloc[0] if 'Establecimiento_Nombre' in df.columns else 'Sin nombre'
+        estab_codigo_nombre[codigo_str] = f"{codigo_str} - {nombre}"
+    
+    # Crear lista de opciones con formato "código - nombre"
+    establecimientos_display = ['Todos'] + [estab_codigo_nombre[codigo] for codigo in sorted(estab_codigo_nombre.keys())]
+    establecimiento_display = st.sidebar.selectbox(
         "Establecimiento:",
-        establecimientos
+        establecimientos_display
     )
+    
+    # Extraer el código seleccionado
+    if establecimiento_display == 'Todos':
+        establecimiento_sel = 'Todos'
+    else:
+        # Extraer y limpiar el código
+        establecimiento_sel = establecimiento_display.split(' - ')[0].strip()
     
     # Filtro por rango de edad
     st.sidebar.subheader("Rango de Edad")
@@ -608,6 +651,14 @@ def crear_filtros_sidebar(df):
     generos = ['Todos', 'M', 'F']
     genero_sel = st.sidebar.selectbox("Género:", generos)
     
+    # Filtro por profesional de salud
+    profesionales = ['Todos'] + sorted(df['Personal_Completo'].dropna().unique().tolist())
+    profesional_sel = st.sidebar.selectbox(
+        "Profesional de Salud:",
+        profesionales,
+        key="profesional_filter"
+    )
+    
     return {
         'fecha_min': pd.to_datetime(fecha_min),
         'fecha_max': pd.to_datetime(fecha_max),
@@ -617,7 +668,8 @@ def crear_filtros_sidebar(df):
         'dni': dni_buscar,
         'codigo': codigo_buscar,
         'turno': turno_sel,
-        'genero': genero_sel
+        'genero': genero_sel,
+        'profesional': profesional_sel
     }
 
 def aplicar_filtros(df, filtros):
@@ -632,7 +684,8 @@ def aplicar_filtros(df, filtros):
     
     # Filtro por establecimiento
     if filtros['establecimiento'] != 'Todos':
-        df_filtrado = df_filtrado[df_filtrado['Id_Establecimiento'] == filtros['establecimiento']]
+        # Convertir ambos valores a string para comparación
+        df_filtrado = df_filtrado[df_filtrado['Id_Establecimiento'].astype(str).str.strip() == str(filtros['establecimiento']).strip()]
     
     # Filtro por edad
     df_filtrado = df_filtrado[
@@ -657,6 +710,10 @@ def aplicar_filtros(df, filtros):
     # Filtro por género
     if filtros['genero'] != 'Todos':
         df_filtrado = df_filtrado[df_filtrado['pac_Genero'] == filtros['genero']]
+    
+    # Filtro por profesional
+    if filtros['profesional'] != 'Todos':
+        df_filtrado = df_filtrado[df_filtrado['Personal_Completo'] == filtros['profesional']]
     
     return df_filtrado
 
@@ -974,7 +1031,7 @@ def main():
         mostrar_metricas(df_filtrado)
         
         # Crear tabs de análisis
-        tab1, tab2, tab3, tab4 = st.tabs(["📊 Tabla", "📈 Gráficos", "📅 Temporal", "📋 Resumen"])
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Tabla", "📈 Gráficos", "📅 Temporal", "📋 Resumen", "🎯 Indicadores"])
         
         with tab1:
             st.subheader("📊 Tabla de Atenciones")
@@ -1206,6 +1263,972 @@ def main():
                     top_5 = df_filtrado['Codigo_Item'].value_counts().head(5)
                     for codigo, count in top_5.items():
                         st.write(f"{codigo}: {count}")
+        
+        with tab5:
+            st.subheader("🎯 Supervisión de Indicadores por Curso de Vida")
+            
+            # Selector de curso de vida
+            curso_vida = st.selectbox(
+                "Seleccionar Curso de Vida:",
+                ["Adulto (30-59 años)", "Joven (18-29 años)", "Adulto Mayor (60+ años)"],
+                key="curso_vida_sel"
+            )
+            
+            # Filtros de indicadores
+            col1, col2, col3 = st.columns([2, 2, 1])
+            
+            with col1:
+                # Selector de tipo de supervisión
+                tipo_supervision = st.selectbox(
+                    "Tipo de Supervisión:",
+                    ["Indicadores Individuales", "Paquete de Atención Integral"],
+                    key="tipo_supervision"
+                )
+            
+            with col2:
+                if tipo_supervision == "Indicadores Individuales":
+                    # Selector de indicador según curso de vida
+                    if curso_vida == "Adulto (30-59 años)":
+                        indicador_opciones = {
+                            "Evaluación Oral Completa": "evaluacion_oral",
+                            "Tamizaje Violencia - WAST": "tamizaje_violencia",
+                            "Tamizaje Agudeza Visual": "agudeza_visual",
+                            "Valoración Nutricional": "valoracion_nutricional",
+                            "Vacuna Influenza": "vacuna_influenza",
+                            "Sintomáticos Respiratorios": "sintomaticos_respiratorios",
+                            "Tamizaje VIH": "tamizaje_vih",
+                            "Tamizaje Hepatitis B": "tamizaje_hepatitis_b",
+                            "Tamizaje Alcohol y Drogas": "tamizaje_alcohol_drogas",
+                            "Cáncer Cuello Uterino (Mujeres)": "cancer_cuello_uterino",
+                            "Cáncer Próstata (Varones 50-59)": "cancer_prostata",
+                            "Cáncer Colon y Recto (50-59)": "cancer_colon_recto",
+                            "Trastornos Depresivos (PHQ-9)": "trastornos_depresivos",
+                            "Plan Atención Integral Elaborado": "plan_atencion_elaborado",
+                            "Plan Atención Integral Ejecutado": "plan_atencion_ejecutado",
+                            "Consejería SSR": "consejeria_ssr"
+                        }
+                    elif curso_vida == "Joven (18-29 años)":
+                        indicador_opciones = {
+                            "Valoración Clínica Factores Riesgo": "valoracion_clinica_riesgo",
+                            "Evaluación Nutricional": "evaluacion_nutricional",
+                            "Tamizaje Violencia Intrafamiliar": "tamizaje_violencia",
+                            "Tamizaje VIH": "tamizaje_vih",
+                            "Consejería Integral": "consejeria_integral",
+                            "Sintomático Respiratorio": "sintomatico_respiratorio",
+                            "Evaluación Oral Completa": "evaluacion_oral",
+                            "Consejería Prevención Cáncer": "consejeria_prevencion_cancer",
+                            "Consejería SSR": "consejeria_ssr",
+                            "Plan Atención Iniciado": "plan_atencion_iniciado",
+                            "Plan Atención Ejecutado": "plan_atencion_ejecutado",
+                            "Tamizaje Alcohol y Drogas": "tamizaje_alcohol_drogas",
+                            "Tamizaje Depresión": "tamizaje_depresion",
+                            "Acceso Anticonceptivos": "acceso_anticonceptivos"
+                        }
+                    else:  # Adulto Mayor
+                        indicador_opciones = {
+                            "Paquete Integral (Resumen)": "paquete_atencion_integral",
+                            "VACAM - Valoración Clínica AM": "vacam",
+                            "Tamizaje Agudeza Visual": "agudeza_visual",
+                            "Tamizaje Integral Salud Mental": "tamizaje_salud_mental",
+                            "Evaluación Oral Completa": "evaluacion_oral",
+                            "Vacuna Neumococo": "vacuna_neumococo",
+                            "Vacuna Influenza": "vacuna_influenza",
+                            "Consejería Integral AM": "consejeria_integral",
+                            "Valoración Clínica y Lab": "valoracion_clinica_lab",
+                            "Vacuna COVID-19": "vacuna_covid19",
+                            "Visita Familiar Integral": "visita_familiar",
+                            "Cáncer Cuello Uterino (60-64)": "cancer_cuello_uterino",
+                            "Cáncer Próstata (60-75)": "cancer_prostata",
+                            "Cáncer Colon-Recto (60-70)": "cancer_colon_recto",
+                            "Cáncer Piel (60-70)": "cancer_piel",
+                            "Examen Clínico Mama (60-69)": "examen_clinico_mama",
+                            "Sintomáticos Respiratorios": "sintomaticos_respiratorios"
+                        }
+                    
+                    indicador_seleccionado = st.selectbox(
+                        "Seleccionar Indicador:",
+                        list(indicador_opciones.keys()),
+                        key="indicador_sel"
+                    )
+                    indicador_key = indicador_opciones[indicador_seleccionado]
+            
+            with col3:
+                # Botón de análisis
+                if st.button("🔍 Analizar", type="primary", key="btn_analizar_indicador"):
+                    st.session_state['analizar_indicador'] = True
+            
+            # División de la interfaz
+            st.markdown("---")
+            
+            # Análisis según tipo seleccionado
+            if tipo_supervision == "Indicadores Individuales" and st.session_state.get('analizar_indicador', False):
+                # Seleccionar funciones e indicadores según curso de vida
+                if curso_vida == "Adulto (30-59 años)":
+                    verificar_indicador = verificar_indicador_adulto
+                    INDICADORES = INDICADORES_ADULTO
+                elif curso_vida == "Joven (18-29 años)":
+                    verificar_indicador = verificar_indicador_joven
+                    INDICADORES = INDICADORES_JOVEN
+                else:  # Adulto Mayor
+                    verificar_indicador = verificar_indicador_adulto_mayor
+                    INDICADORES = INDICADORES_ADULTO_MAYOR
+                
+                # Verificar cumplimiento del indicador
+                df_indicador = verificar_indicador(df_filtrado, indicador_key)
+                
+                if df_indicador is not None and not df_indicador.empty:
+                    # Mostrar estadísticas
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    # Calcular estadísticas
+                    dni_cumplen = df_indicador['pac_Numero_Documento'].nunique()
+                    dni_total = df_filtrado[
+                        (df_filtrado['edad_anos'] >= INDICADORES[indicador_key]['edad_min']) & 
+                        (df_filtrado['edad_anos'] <= INDICADORES[indicador_key]['edad_max'])
+                    ]['pac_Numero_Documento'].nunique()
+                    
+                    # Aplicar filtro de género si corresponde
+                    if 'genero' in INDICADORES[indicador_key]:
+                        dni_total = df_filtrado[
+                            (df_filtrado['edad_anos'] >= INDICADORES[indicador_key]['edad_min']) & 
+                            (df_filtrado['edad_anos'] <= INDICADORES[indicador_key]['edad_max']) &
+                            (df_filtrado['pac_Genero'] == INDICADORES[indicador_key]['genero'])
+                        ]['pac_Numero_Documento'].nunique()
+                    
+                    porcentaje_cumplimiento = (dni_cumplen / dni_total * 100) if dni_total > 0 else 0
+                    
+                    with col1:
+                        st.metric("DNIs que cumplen", f"{dni_cumplen:,}")
+                    with col2:
+                        st.metric("DNIs elegibles", f"{dni_total:,}")
+                    with col3:
+                        st.metric("% Cumplimiento", f"{porcentaje_cumplimiento:.1f}%")
+                    with col4:
+                        clasificacion = "🟢 Satisfactorio" if porcentaje_cumplimiento >= 80 else \
+                                       "🟡 Aceptable" if porcentaje_cumplimiento >= 70 else \
+                                       "🟠 En proceso" if porcentaje_cumplimiento >= 60 else "🔴 Crítico"
+                        st.metric("Estado", clasificacion)
+                    
+                    # Mostrar lista de DNIs con capacidad de selección
+                    st.markdown("### 📋 DNIs que cumplen el indicador")
+                    
+                    # Selector de columnas adicionales
+                    columnas_disponibles = {
+                        'Fecha_Atencion': 'Última Fecha',
+                        'Id_Establecimiento': 'Código Estab.',
+                        'Establecimiento_Nombre': 'Nombre Estab.',
+                        'Personal_Completo': 'Personal',
+                        'UPS_Descripcion': 'Servicio',
+                        'mes_Descripcion': 'Mes',
+                        'Id_Turno': 'Turno'
+                    }
+                    
+                    # Botones para seleccionar/quitar todas
+                    col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 4])
+                    with col_btn1:
+                        if st.button("✅ Seleccionar todas", key="sel_todas_ind"):
+                            st.session_state.columnas_indicador = list(columnas_disponibles.keys())
+                            st.rerun()
+                    with col_btn2:
+                        if st.button("❌ Quitar todas", key="quit_todas_ind"):
+                            st.session_state.columnas_indicador = []
+                            st.rerun()
+                    
+                    # Usar el valor del session_state si existe
+                    default_cols = st.session_state.get('columnas_indicador', [])
+                    
+                    columnas_seleccionadas = st.multiselect(
+                        "Agregar columnas a la tabla:",
+                        options=list(columnas_disponibles.keys()),
+                        default=default_cols,
+                        format_func=lambda x: columnas_disponibles[x],
+                        key="columnas_indicador"
+                    )
+                    
+                    # Crear DataFrame con información resumida
+                    agg_dict = {
+                        'Paciente_Completo': 'first',
+                        'edad_anos': 'first',
+                        'pac_Genero': 'first',
+                        'Fecha_Atencion': 'count'
+                    }
+                    
+                    # Agregar columnas seleccionadas al agregado
+                    for col in columnas_seleccionadas:
+                        if col == 'Fecha_Atencion':
+                            agg_dict[col] = 'max'  # Última fecha
+                        else:
+                            agg_dict[col] = 'first'
+                    
+                    df_resumen_dni = df_indicador.groupby('pac_Numero_Documento').agg(agg_dict).reset_index()
+                    
+                    # Renombrar columnas base
+                    columnas_rename = {
+                        'pac_Numero_Documento': 'DNI',
+                        'Paciente_Completo': 'Nombre Completo',
+                        'edad_anos': 'Edad',
+                        'pac_Genero': 'Género'
+                    }
+                    
+                    # Manejar la columna de conteo de fecha
+                    if 'Fecha_Atencion' in columnas_seleccionadas:
+                        # Crear columna temporal para el conteo
+                        df_resumen_dni['N° Registros'] = df_indicador.groupby('pac_Numero_Documento').size().values
+                        # La fecha ya está como max
+                        columnas_rename['Fecha_Atencion'] = 'Última Fecha'
+                    else:
+                        columnas_rename['Fecha_Atencion'] = 'N° Registros'
+                    
+                    # Agregar columnas seleccionadas al rename
+                    for col in columnas_seleccionadas:
+                        if col in columnas_disponibles and col != 'Fecha_Atencion':
+                            columnas_rename[col] = columnas_disponibles[col]
+                    
+                    df_resumen_dni = df_resumen_dni.rename(columns=columnas_rename)
+                    
+                    # Selector de DNI para supervisión detallada
+                    col1, col2 = st.columns([3, 1])
+                    
+                    with col1:
+                        dni_supervisar = st.selectbox(
+                            "Seleccionar DNI para supervisar códigos:",
+                            ["Seleccione un DNI..."] + df_resumen_dni['DNI'].tolist(),
+                            key="dni_supervisar"
+                        )
+                    
+                    with col2:
+                        if dni_supervisar != "Seleccione un DNI...":
+                            if st.button("📊 Ver Detalle", key="btn_ver_detalle"):
+                                st.session_state['mostrar_detalle_dni'] = dni_supervisar
+                    
+                    # Mostrar tabla resumen
+                    st.dataframe(
+                        df_resumen_dni,
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "DNI": st.column_config.TextColumn("DNI", width="small"),
+                            "Nombre Completo": st.column_config.TextColumn("Nombre", width="medium"),
+                            "Edad": st.column_config.NumberColumn("Edad", width="small"),
+                            "Género": st.column_config.TextColumn("Género", width="small"),
+                            "N° Registros": st.column_config.NumberColumn("Registros", width="small")
+                        }
+                    )
+                    
+                    # Mostrar detalle del DNI seleccionado
+                    if st.session_state.get('mostrar_detalle_dni') and st.session_state['mostrar_detalle_dni'] == dni_supervisar:
+                        st.markdown(f"### 🔍 Detalle de códigos para DNI: {dni_supervisar}")
+                        
+                        # Filtrar registros del DNI
+                        df_dni_detalle = df_indicador[df_indicador['pac_Numero_Documento'] == dni_supervisar]
+                        
+                        # Información del indicador
+                        info_indicador = INDICADORES[indicador_key]
+                        st.info(f"**{info_indicador['nombre']}** - {info_indicador['descripcion']}")
+                        
+                        # Mostrar códigos relevantes para el indicador
+                        columnas_detalle = ['Fecha_Formato', 'Codigo_Item', 'CIE10_Descripcion', 
+                                          'Tipo_Diagnostico', 'Valor_Lab', 'Personal_Completo']
+                        
+                        df_mostrar = df_dni_detalle[columnas_detalle].copy()
+                        
+                        st.dataframe(
+                            df_mostrar,
+                            use_container_width=True,
+                            hide_index=True,
+                            column_config={
+                                "Fecha_Formato": st.column_config.TextColumn("Fecha", width="small"),
+                                "Codigo_Item": st.column_config.TextColumn("Código", width="small"),
+                                "CIE10_Descripcion": st.column_config.TextColumn("Descripción", width="medium"),
+                                "Tipo_Diagnostico": st.column_config.TextColumn("Tipo Dx", width="small"),
+                                "Valor_Lab": st.column_config.TextColumn("Lab", width="small"),
+                                "Personal_Completo": st.column_config.TextColumn("Personal", width="medium")
+                            }
+                        )
+                        
+                        # Mostrar reglas del indicador
+                        with st.expander("📋 Ver reglas del indicador"):
+                            for regla in info_indicador.get('reglas', []):
+                                if isinstance(regla, dict):
+                                    st.markdown(f"**Código:** {regla.get('codigo', 'N/A')}")
+                                    st.markdown(f"**Descripción:** {regla.get('descripcion', 'N/A')}")
+                                    if 'lab_descripcion' in regla:
+                                        st.markdown(f"**Valores Lab:** {regla['lab_descripcion']}")
+                                    st.markdown("---")
+                
+                else:
+                    st.warning("No se encontraron registros que cumplan con este indicador en el período seleccionado.")
+            
+            elif tipo_supervision == "Paquete de Atención Integral":
+                # Análisis del paquete integral
+                st.markdown("### 📦 Análisis del Paquete de Atención Integral")
+                
+                # Seleccionar rango de edad y función según curso de vida
+                if curso_vida == "Adulto (30-59 años)":
+                    edad_min, edad_max = 30, 59
+                    verificar_paquete = verificar_paquete_adulto
+                    grupo_etario = "Adultos"
+                elif curso_vida == "Joven (18-29 años)":
+                    edad_min, edad_max = 18, 29
+                    verificar_paquete = verificar_paquete_joven
+                    grupo_etario = "Jóvenes"
+                else:  # Adulto Mayor
+                    edad_min, edad_max = 60, 150
+                    verificar_paquete = verificar_paquete_adulto_mayor
+                    grupo_etario = "Adultos Mayores"
+                
+                # Filtrar por curso de vida
+                df_curso = df_filtrado[
+                    (df_filtrado['edad_anos'] >= edad_min) & 
+                    (df_filtrado['edad_anos'] <= edad_max)
+                ]
+                
+                if not df_curso.empty:
+                    # Selector de columnas adicionales para paquete integral
+                    st.markdown("#### 🔧 Personalizar tabla de resultados")
+                    columnas_disponibles_paquete = {
+                        'Id_Establecimiento': 'Código Estab.',
+                        'Establecimiento_Nombre': 'Nombre Estab.',
+                        'Personal_Completo': 'Último Personal',
+                        'Fecha_Atencion': 'Última Atención',
+                        'UPS_Descripcion': 'Último Servicio',
+                        'mes_Descripcion': 'Mes Atención',
+                        'Id_Turno': 'Turno'
+                    }
+                    
+                    # Botones para seleccionar/quitar todas
+                    col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 4])
+                    with col_btn1:
+                        if st.button("✅ Seleccionar todas", key="sel_todas_paq"):
+                            st.session_state.columnas_paquete = list(columnas_disponibles_paquete.keys())
+                            st.rerun()
+                    with col_btn2:
+                        if st.button("❌ Quitar todas", key="quit_todas_paq"):
+                            st.session_state.columnas_paquete = []
+                            st.rerun()
+                    
+                    # Usar el valor del session_state si existe
+                    default_cols_paq = st.session_state.get('columnas_paquete', [])
+                    
+                    columnas_seleccionadas_paquete = st.multiselect(
+                        "Agregar columnas a la tabla de paquetes:",
+                        options=list(columnas_disponibles_paquete.keys()),
+                        default=default_cols_paq,
+                        format_func=lambda x: columnas_disponibles_paquete[x],
+                        key="columnas_paquete"
+                    )
+                    
+                    # Obtener DNIs únicos
+                    dni_curso = df_curso['pac_Numero_Documento'].unique()
+                    
+                    # Calcular cumplimiento del paquete para cada DNI
+                    resultados_paquete = []
+                    
+                    with st.spinner(f'Analizando paquetes de atención integral para {grupo_etario.lower()}...'):
+                        for dni in dni_curso[:100]:  # Limitar a 100 para evitar demoras
+                            resultado = verificar_paquete(df_curso, dni)
+                            
+                            # Obtener información del paciente
+                            info_paciente = df_curso[df_curso['pac_Numero_Documento'] == dni].iloc[0]
+                            
+                            # Construir registro con información básica primero
+                            registro = {
+                                'DNI': dni,
+                                'Nombre': info_paciente['Paciente_Completo'],
+                                'Edad': info_paciente['edad_anos'],
+                                'Género': info_paciente['pac_Genero']
+                            }
+                            
+                            # Agregar columnas seleccionadas
+                            for col in columnas_seleccionadas_paquete:
+                                if col == 'Fecha_Atencion':
+                                    # Obtener la última fecha de atención
+                                    registro[columnas_disponibles_paquete[col]] = df_curso[df_curso['pac_Numero_Documento'] == dni]['Fecha_Formato'].max()
+                                elif col in info_paciente.index:
+                                    registro[columnas_disponibles_paquete[col]] = info_paciente[col]
+                                else:
+                                    # Para otras columnas, obtener el último valor
+                                    ultimo_registro = df_curso[df_curso['pac_Numero_Documento'] == dni].iloc[-1]
+                                    registro[columnas_disponibles_paquete[col]] = ultimo_registro.get(col, 'N/A')
+                            
+                            # Agregar componentes según curso de vida
+                            if curso_vida == "Adulto (30-59 años)":
+                                registro.update({
+                                    'Val. Clínica': '✅' if resultado['componentes'].get('Valoración Clínica y Tamizaje Laboratorial', False) else '❌',
+                                    'Depresión': '✅' if resultado['componentes'].get('Tamizaje Trastornos Depresivos', False) else '❌',
+                                    'Violencia': '✅' if resultado['componentes'].get('Tamizaje Violencia', False) else '❌',
+                                    'VIH': '✅' if resultado['componentes'].get('Tamizaje VIH', False) else '❌',
+                                    'Agudeza Visual': '✅' if resultado['componentes'].get('Tamizaje Agudeza Visual', False) else '❌',
+                                    'Eval. Oral': '✅' if resultado['componentes'].get('Evaluación Oral Completa', False) else '❌',
+                                    'Alcohol/Drogas': '✅' if resultado['componentes'].get('Tamizaje Alcohol y Drogas', False) else '❌'
+                                })
+                            elif curso_vida == "Joven (18-29 años)":
+                                registro.update({
+                                    'Val. Clínica': '✅' if resultado['componentes'].get('Valoración Clínica y Factores de Riesgo', False) else '❌',
+                                    'Violencia': '✅' if resultado['componentes'].get('Tamizaje Violencia Intrafamiliar', False) else '❌',
+                                    'Alcohol/Drogas': '✅' if resultado['componentes'].get('Tamizaje Alcohol y Drogas', False) else '❌',
+                                    'Depresión': '✅' if resultado['componentes'].get('Tamizaje Depresión', False) else '❌',
+                                    'Eval. Nutricional': '✅' if resultado['componentes'].get('Evaluación Nutricional y Antropométrica', False) else '❌',
+                                    'Consejería SSR': '✅' if resultado['componentes'].get('Consejería Salud Sexual y Reproductiva', False) else '❌'
+                                })
+                            else:  # Adulto Mayor
+                                registro.update({
+                                    'VACAM': '✅' if resultado['componentes'].get('VACAM - Valoración Clínica', False) else '❌',
+                                    'Agudeza Visual': '✅' if resultado['componentes'].get('Tamizaje Agudeza Visual', False) else '❌',
+                                    'Salud Mental': '✅' if resultado['componentes'].get('Tamizaje Integral Salud Mental', False) else '❌',
+                                    'Eval. Oral': '✅' if resultado['componentes'].get('Evaluación Oral Completa', False) else '❌',
+                                    'Vac. Influenza': '✅' if resultado['componentes'].get('Vacuna Influenza', False) else '❌',
+                                    'Consejería': '✅' if resultado['componentes'].get('Consejería Integral', False) else '❌',
+                                    'Val. Clínica/Lab': '✅' if resultado['componentes'].get('Valoración Clínica y Laboratorio', False) else '❌'
+                                })
+                            
+                            # Agregar columnas de estado del paquete al final
+                            registro.update({
+                                'N° Componentes': sum(resultado['componentes'].values()),
+                                'Plan Elaborado': '✅' if resultado['plan_elaborado'] else '❌',
+                                'Plan Ejecutado': '✅' if resultado['plan_ejecutado'] else '❌',
+                                'Completo': '✅' if resultado['completo'] else '❌'
+                            })
+                            
+                            resultados_paquete.append(registro)
+                    
+                    df_paquetes = pd.DataFrame(resultados_paquete)
+                    
+                    # Calcular número de componentes esperados según curso de vida
+                    if curso_vida == "Adulto (30-59 años)":
+                        num_componentes_total = 7
+                    elif curso_vida == "Joven (18-29 años)":
+                        num_componentes_total = 6
+                    else:  # Adulto Mayor
+                        num_componentes_total = 7
+                    
+                    # Agregar columna de componentes faltantes
+                    df_paquetes['Componentes_Faltantes'] = num_componentes_total - df_paquetes['N° Componentes']
+                    
+                    # Reorganizar columnas para que las de estado estén al final
+                    columnas_base = ['DNI', 'Nombre', 'Edad', 'Género']
+                    columnas_adicionales = [col for col in columnas_disponibles_paquete.values() if col in df_paquetes.columns]
+                    
+                    # Columnas de componentes según curso de vida
+                    if curso_vida == "Adulto (30-59 años)":
+                        columnas_componentes = ['Val. Clínica', 'Depresión', 'Violencia', 'VIH', 
+                                              'Agudeza Visual', 'Eval. Oral', 'Alcohol/Drogas']
+                    elif curso_vida == "Joven (18-29 años)":
+                        columnas_componentes = ['Val. Clínica', 'Violencia', 'Alcohol/Drogas', 
+                                              'Depresión', 'Eval. Nutricional', 'Consejería SSR']
+                    else:  # Adulto Mayor
+                        columnas_componentes = ['VACAM', 'Agudeza Visual', 'Salud Mental', 
+                                              'Eval. Oral', 'Vac. Influenza', 'Consejería', 'Val. Clínica/Lab']
+                    
+                    # Columnas de estado al final
+                    columnas_estado = ['N° Componentes', 'Componentes_Faltantes', 'Plan Elaborado', 
+                                     'Plan Ejecutado', 'Completo']
+                    
+                    # Reordenar DataFrame
+                    columnas_ordenadas = columnas_base + columnas_adicionales + columnas_componentes + columnas_estado
+                    df_paquetes = df_paquetes[columnas_ordenadas]
+                    
+                    # Ordenar por prioridad: primero los que tienen más componentes (les falta menos)
+                    df_paquetes = df_paquetes.sort_values('N° Componentes', ascending=False)
+                    
+                    # Visualización mejorada del estado
+                    st.markdown("### 🎯 Resumen Visual del Estado de Paquetes")
+                    
+                    # Gráfico de dona para completos vs incompletos
+                    col_graf1, col_graf2 = st.columns(2)
+                    
+                    with col_graf1:
+                        # Datos para el gráfico de dona
+                        completos = len(df_paquetes[df_paquetes['Completo'] == '✅'])
+                        incompletos = len(df_paquetes[df_paquetes['Completo'] == '❌'])
+                        
+                        fig_dona = px.pie(
+                            values=[completos, incompletos],
+                            names=['Completos', 'Incompletos'],
+                            title='Estado de Paquetes',
+                            hole=0.4,
+                            color_discrete_map={'Completos': '#00CC88', 'Incompletos': '#FF6B6B'}
+                        )
+                        fig_dona.update_traces(textposition='inside', textinfo='value+percent')
+                        fig_dona.update_layout(height=300)
+                        st.plotly_chart(fig_dona, use_container_width=True)
+                    
+                    with col_graf2:
+                        # Distribución por número de componentes
+                        dist_componentes = df_paquetes['N° Componentes'].value_counts().sort_index()
+                        
+                        fig_dist = px.bar(
+                            x=dist_componentes.index,
+                            y=dist_componentes.values,
+                            title='Distribución por N° Componentes Completados',
+                            labels={'x': 'N° Componentes', 'y': 'Cantidad de Personas'},
+                            color=dist_componentes.index,
+                            color_continuous_scale='Viridis'
+                        )
+                        fig_dist.update_layout(height=300, showlegend=False)
+                        st.plotly_chart(fig_dist, use_container_width=True)
+                    
+                    # Mostrar métricas
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    total_personas = len(dni_curso)
+                    con_plan = len(df_paquetes[df_paquetes['Plan Elaborado'] == '✅'])
+                    completos = len(df_paquetes[df_paquetes['Completo'] == '✅'])
+                    porcentaje_completo = (completos / total_personas * 100) if total_personas > 0 else 0
+                    
+                    with col1:
+                        st.metric(f"Total {grupo_etario}", f"{total_personas:,}")
+                    with col2:
+                        st.metric("Con Plan Elaborado", f"{con_plan:,}")
+                    with col3:
+                        st.metric("Paquetes Completos", f"{completos:,}")
+                    with col4:
+                        st.metric("% Cumplimiento", f"{porcentaje_completo:.1f}%")
+                    
+                    # Filtros mejorados para la tabla
+                    st.markdown("### 🔍 Filtros de Supervisión")
+                    col1, col2, col3 = st.columns([2, 2, 2])
+                    
+                    with col1:
+                        filtro_paquete = st.selectbox(
+                            "Filtrar por estado:",
+                            ["Todos", "Completos", "Incompletos", "Con Plan", "Sin Plan", "Casi Completos (1-2 faltantes)"],
+                            key="filtro_paquete"
+                        )
+                    
+                    with col2:
+                        # Filtro por número de componentes
+                        num_componentes_filtro = st.select_slider(
+                            "N° Componentes completados:",
+                            options=list(range(0, num_componentes_total + 1)),
+                            value=(0, num_componentes_total),
+                            key="filtro_num_componentes"
+                        )
+                    
+                    with col3:
+                        # Mostrar estadísticas de priorización
+                        casi_completos = len(df_paquetes[df_paquetes['Componentes_Faltantes'].isin([1, 2])])
+                        st.info(f"🎯 **Prioridad Alta**: {casi_completos} personas\nLes faltan 1-2 componentes")
+                    
+                    # Aplicar filtros
+                    df_mostrar = df_paquetes.copy()
+                    
+                    if filtro_paquete == "Completos":
+                        df_mostrar = df_mostrar[df_mostrar['Completo'] == '✅']
+                    elif filtro_paquete == "Incompletos":
+                        df_mostrar = df_mostrar[df_mostrar['Completo'] == '❌']
+                    elif filtro_paquete == "Con Plan":
+                        df_mostrar = df_mostrar[df_mostrar['Plan Elaborado'] == '✅']
+                    elif filtro_paquete == "Sin Plan":
+                        df_mostrar = df_mostrar[df_mostrar['Plan Elaborado'] == '❌']
+                    elif filtro_paquete == "Casi Completos (1-2 faltantes)":
+                        df_mostrar = df_mostrar[df_mostrar['Componentes_Faltantes'].isin([1, 2])]
+                    
+                    # Filtro por número de componentes
+                    df_mostrar = df_mostrar[
+                        (df_mostrar['N° Componentes'] >= num_componentes_filtro[0]) &
+                        (df_mostrar['N° Componentes'] <= num_componentes_filtro[1])
+                    ]
+                    
+                    # Si hay registros filtrados y son incompletos, mostrar análisis de componentes faltantes
+                    if len(df_mostrar) > 0 and (filtro_paquete in ["Incompletos", "Casi Completos (1-2 faltantes)"]):
+                        st.markdown("### 📊 Análisis de Componentes Faltantes")
+                        
+                        # Contar qué componentes faltan más
+                        componentes_faltantes = {}
+                        
+                        # Definir las columnas de componentes según curso de vida
+                        if curso_vida == "Adulto (30-59 años)":
+                            columnas_componentes = ['Val. Clínica', 'Depresión', 'Violencia', 'VIH', 
+                                                  'Agudeza Visual', 'Eval. Oral', 'Alcohol/Drogas']
+                        elif curso_vida == "Joven (18-29 años)":
+                            columnas_componentes = ['Val. Clínica', 'Violencia', 'Alcohol/Drogas', 
+                                                  'Depresión', 'Eval. Nutricional', 'Consejería SSR']
+                        else:  # Adulto Mayor
+                            columnas_componentes = ['VACAM', 'Agudeza Visual', 'Salud Mental', 
+                                                  'Eval. Oral', 'Vac. Influenza', 'Consejería', 'Val. Clínica/Lab']
+                        
+                        # Contar componentes faltantes
+                        for col in columnas_componentes:
+                            if col in df_mostrar.columns:
+                                faltantes = len(df_mostrar[df_mostrar[col] == '❌'])
+                                if faltantes > 0:
+                                    componentes_faltantes[col] = faltantes
+                        
+                        if componentes_faltantes:
+                            # Crear gráfico de componentes faltantes
+                            fig_faltantes = px.bar(
+                                x=list(componentes_faltantes.keys()),
+                                y=list(componentes_faltantes.values()),
+                                title='Componentes Faltantes por Frecuencia',
+                                labels={'x': 'Componente', 'y': 'N° Personas que les falta'},
+                                color=list(componentes_faltantes.values()),
+                                color_continuous_scale='Reds'
+                            )
+                            fig_faltantes.update_layout(height=300, showlegend=False)
+                            st.plotly_chart(fig_faltantes, use_container_width=True)
+                            
+                            # Mostrar recomendaciones
+                            componente_mas_faltante = max(componentes_faltantes, key=componentes_faltantes.get)
+                            st.warning(f"⚠️ **Componente crítico**: '{componente_mas_faltante}' falta en {componentes_faltantes[componente_mas_faltante]} personas")
+                    
+                    # Mostrar tabla de paquetes
+                    st.markdown("### 📊 Estado de Paquetes de Atención Integral")
+                    
+                    # Configuración de columnas
+                    config_columnas = {
+                        "DNI": st.column_config.TextColumn("DNI", width="small"),
+                        "Nombre": st.column_config.TextColumn("Nombre", width="medium"),
+                        "Edad": st.column_config.NumberColumn("Edad", width="small"),
+                        "Género": st.column_config.TextColumn("Género", width="small"),
+                        "N° Componentes": st.column_config.NumberColumn("Componentes", width="small", help="Número de componentes completados"),
+                        "Componentes_Faltantes": st.column_config.NumberColumn("Faltantes", width="small", help="Número de componentes que faltan"),
+                        "Plan Elaborado": st.column_config.TextColumn("Plan Elaborado", width="small"),
+                        "Plan Ejecutado": st.column_config.TextColumn("Plan Ejecutado", width="small"),
+                        "Completo": st.column_config.TextColumn("Completo", width="small")
+                    }
+                    
+                    # Agregar configuración para columnas adicionales
+                    for col_nombre in columnas_disponibles_paquete.values():
+                        if col_nombre in df_mostrar.columns:
+                            if "Fecha" in col_nombre:
+                                config_columnas[col_nombre] = st.column_config.TextColumn(col_nombre, width="small")
+                            elif "Código" in col_nombre:
+                                config_columnas[col_nombre] = st.column_config.TextColumn(col_nombre, width="small")
+                            else:
+                                config_columnas[col_nombre] = st.column_config.TextColumn(col_nombre, width="medium")
+                    
+                    st.dataframe(
+                        df_mostrar,
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config=config_columnas
+                    )
+                    
+                    # Sistema avanzado de exportación JSON
+                    if filtro_paquete in ["Incompletos", "Casi Completos (1-2 faltantes)", "Todos"]:
+                        st.markdown("### 🤖 Automatización HIS-MINSA - Exportación Flexible")
+                        
+                        # Selector de modo de exportación
+                        modo_exportacion = st.radio(
+                            "Modo de exportación:",
+                            ["🚀 Rápido (Todos los faltantes)", "⚙️ Avanzado (Selección personalizada)"],
+                            horizontal=True,
+                            key="modo_export"
+                        )
+                        
+                        if modo_exportacion == "🚀 Rápido (Todos los faltantes)":
+                            # Modo simple - comportamiento original
+                            col_exp1, col_exp2 = st.columns([2, 2])
+                            
+                            with col_exp1:
+                                if st.button("📥 Exportar JSON para Corrección", type="primary", key="btn_export_simple"):
+                                    json_data = generar_json_exportacion(df_filtrado, filtro_paquete, curso_vida)
+                                    
+                                    if json_data:
+                                        json_str = json.dumps(json_data, indent=2, ensure_ascii=False)
+                                        nombre_archivo = f"correccion_paquetes_{curso_vida.lower().replace(' ', '_').replace('(', '').replace(')', '')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+                                        
+                                        st.download_button(
+                                            label="💾 Descargar JSON",
+                                            data=json_str,
+                                            file_name=nombre_archivo,
+                                            mime="application/json",
+                                            key="download_json_simple"
+                                        )
+                                        
+                                        st.success(f"✅ JSON generado con {json_data['total_pacientes']} pacientes")
+                                        
+                                        with st.expander("👁️ Vista previa del JSON"):
+                                            st.json(json_data)
+                                    else:
+                                        st.warning("No se encontraron pacientes para exportar")
+                            
+                            with col_exp2:
+                                st.info("📌 Exporta todos los códigos faltantes de todos los pacientes filtrados")
+                        
+                        else:  # Modo Avanzado
+                            # Contenedor para selección personalizada
+                            st.markdown("#### 📋 Selección Personalizada de Pacientes y Códigos")
+                            
+                            # Inicializar estados en session_state
+                            if 'pacientes_seleccionados' not in st.session_state:
+                                st.session_state.pacientes_seleccionados = []
+                            if 'componentes_seleccionados' not in st.session_state:
+                                st.session_state.componentes_seleccionados = {}
+                            if 'codigos_seleccionados' not in st.session_state:
+                                st.session_state.codigos_seleccionados = {}
+                            
+                            # Tab para organizar la selección
+                            tab_pac, tab_comp, tab_preview = st.tabs(["1️⃣ Seleccionar Pacientes", "2️⃣ Seleccionar Componentes", "3️⃣ Vista Previa y Exportar"])
+                            
+                            with tab_pac:
+                                st.markdown("##### Selecciona los pacientes a incluir:")
+                                
+                                # Botones de selección rápida
+                                col_sel1, col_sel2, col_sel3, col_sel4 = st.columns(4)
+                                with col_sel1:
+                                    if st.button("✅ Seleccionar Todos", key="sel_todos_pac"):
+                                        st.session_state.pacientes_seleccionados = df_mostrar['DNI'].tolist()
+                                        st.rerun()
+                                with col_sel2:
+                                    if st.button("❌ Quitar Todos", key="quit_todos_pac"):
+                                        st.session_state.pacientes_seleccionados = []
+                                        st.rerun()
+                                with col_sel3:
+                                    if st.button("🎯 Solo Casi Completos", key="sel_casi_comp"):
+                                        # Seleccionar solo los que les falta 1-2 componentes
+                                        df_casi = df_mostrar[df_mostrar['Componentes_Faltantes'].isin([1, 2])]
+                                        st.session_state.pacientes_seleccionados = df_casi['DNI'].tolist()
+                                        st.rerun()
+                                
+                                # Crear DataFrame con checkboxes
+                                df_seleccion = df_mostrar[['DNI', 'Nombre', 'Edad', 'N° Componentes', 'Componentes_Faltantes']].copy()
+                                df_seleccion['Seleccionar'] = df_seleccion['DNI'].apply(
+                                    lambda x: x in st.session_state.pacientes_seleccionados
+                                )
+                                
+                                # Editor de datos con checkboxes
+                                df_editado = st.data_editor(
+                                    df_seleccion,
+                                    column_config={
+                                        "Seleccionar": st.column_config.CheckboxColumn(
+                                            "Seleccionar",
+                                            help="Marca para incluir en la exportación",
+                                            default=False,
+                                        ),
+                                        "DNI": st.column_config.TextColumn("DNI", disabled=True),
+                                        "Nombre": st.column_config.TextColumn("Nombre", disabled=True),
+                                        "Edad": st.column_config.NumberColumn("Edad", disabled=True),
+                                        "N° Componentes": st.column_config.NumberColumn("Completados", disabled=True),
+                                        "Componentes_Faltantes": st.column_config.NumberColumn("Faltantes", disabled=True),
+                                    },
+                                    disabled=["DNI", "Nombre", "Edad", "N° Componentes", "Componentes_Faltantes"],
+                                    hide_index=True,
+                                    use_container_width=True,
+                                    key="df_pacientes_editor"
+                                )
+                                
+                                # Actualizar selección
+                                st.session_state.pacientes_seleccionados = df_editado[df_editado['Seleccionar']]['DNI'].tolist()
+                                
+                                if st.session_state.pacientes_seleccionados:
+                                    st.success(f"✅ {len(st.session_state.pacientes_seleccionados)} pacientes seleccionados")
+                                else:
+                                    st.warning("⚠️ No hay pacientes seleccionados")
+                            
+                            with tab_comp:
+                                if st.session_state.pacientes_seleccionados:
+                                    st.markdown("##### Configuración de exportación:")
+                                    
+                                    # Opción para elegir qué exportar
+                                    col_config1, col_config2 = st.columns(2)
+                                    with col_config1:
+                                        tipo_exportacion = st.radio(
+                                            "¿Qué códigos deseas exportar?",
+                                            ["Solo códigos faltantes", "Todos los códigos (existentes + faltantes)"],
+                                            key="tipo_export_radio",
+                                            help="Faltantes: Solo códigos que el paciente NO tiene. Todos: Incluye códigos existentes para modificar LAB"
+                                        )
+                                    
+                                    # Guardar en session state
+                                    st.session_state.exportar_solo_faltantes = (tipo_exportacion == "Solo códigos faltantes")
+                                    
+                                    st.markdown("##### Selecciona qué componentes/códigos exportar:")
+                                    
+                                    # Obtener componentes disponibles según curso de vida
+                                    if curso_vida == "Adulto (30-59 años)":
+                                        componentes_disponibles = list(PAQUETE_INTEGRAL_ADULTO['componentes_minimos'])
+                                        indicadores_ref = INDICADORES_ADULTO
+                                    elif curso_vida == "Joven (18-29 años)":
+                                        componentes_disponibles = list(PAQUETE_INTEGRAL_JOVEN['componentes_minimos'])
+                                        indicadores_ref = INDICADORES_JOVEN
+                                    else:
+                                        componentes_disponibles = list(PAQUETE_INTEGRAL_ADULTO_MAYOR['componentes_minimos'])
+                                        indicadores_ref = INDICADORES_ADULTO_MAYOR
+                                    
+                                    # Selector de componentes
+                                    componentes_nombres = [comp['componente'] for comp in componentes_disponibles]
+                                    # Agregar Plan de Atención como opción adicional
+                                    componentes_nombres_con_plan = componentes_nombres + ["Plan de Atención Integral"]
+                                    
+                                    componentes_seleccionados = st.multiselect(
+                                        "Componentes a incluir:",
+                                        componentes_nombres_con_plan,
+                                        default=componentes_nombres_con_plan,
+                                        key="multi_componentes"
+                                    )
+                                    
+                                    # Para cada componente seleccionado, mostrar códigos específicos
+                                    if componentes_seleccionados:
+                                        st.markdown("##### Personalización por componente:")
+                                        
+                                        for comp_nombre in componentes_seleccionados:
+                                            # Encontrar el componente
+                                            componente = next((c for c in componentes_disponibles if c['componente'] == comp_nombre), None)
+                                            if componente and 'indicador' in componente:
+                                                indicador_info = indicadores_ref.get(componente['indicador'], {})
+                                                
+                                                with st.expander(f"📌 {comp_nombre}"):
+                                                    # Mostrar códigos disponibles
+                                                    codigos_componente = []
+                                                    
+                                                    if 'reglas' in indicador_info:
+                                                        if isinstance(indicador_info['reglas'], list):
+                                                            for regla in indicador_info['reglas']:
+                                                                codigo_desc = f"{regla['codigo']} - {regla.get('descripcion', 'Sin descripción')}"
+                                                                if 'lab_valores' in regla and regla['lab_valores']:
+                                                                    lab_info = regla['lab_valores'][0] if isinstance(regla['lab_valores'], list) else regla['lab_valores']
+                                                                    if lab_info:
+                                                                        codigo_desc += f" [LAB: {lab_info}]"
+                                                                codigos_componente.append({
+                                                                    'codigo': regla['codigo'],
+                                                                    'descripcion': codigo_desc,
+                                                                    'regla': regla
+                                                                })
+                                                    
+                                                    if codigos_componente:
+                                                        # Crear key única para este componente
+                                                        key_comp = f"codigos_{componente['indicador']}"
+                                                        
+                                                        # Selector de códigos
+                                                        codigos_seleccionados = st.multiselect(
+                                                            "Selecciona códigos específicos:",
+                                                            [c['descripcion'] for c in codigos_componente],
+                                                            default=[c['descripcion'] for c in codigos_componente],
+                                                            key=key_comp
+                                                        )
+                                                        
+                                                        # Guardar selección
+                                                        st.session_state.codigos_seleccionados[componente['indicador']] = [
+                                                            c for c in codigos_componente 
+                                                            if c['descripcion'] in codigos_seleccionados
+                                                        ]
+                                                    else:
+                                                        st.info("No hay códigos específicos configurados")
+                                            
+                                        # Manejo especial para Plan de Atención Integral
+                                        if "Plan de Atención Integral" in componentes_seleccionados:
+                                            with st.expander("📌 Plan de Atención Integral"):
+                                                st.markdown("**Selecciona qué elementos del plan incluir:**")
+                                                col_plan1, col_plan2 = st.columns(2)
+                                                with col_plan1:
+                                                    plan_elaborado = st.checkbox("✓ 99801 - Plan Elaborado [LAB: 1]", value=True, key="plan_elab_check")
+                                                with col_plan2:
+                                                    plan_ejecutado = st.checkbox("✓ 99801 - Plan Ejecutado [LAB: TA]", value=True, key="plan_ejec_check")
+                                                
+                                                st.session_state.codigos_seleccionados['plan_atencion'] = {
+                                                    'elaborado': plan_elaborado,
+                                                    'ejecutado': plan_ejecutado
+                                                }
+                                                
+                                                # Mostrar información adicional
+                                                st.info("💡 El Plan de Atención Integral es necesario para completar el paquete de atención")
+                                    else:
+                                        st.warning("⚠️ Selecciona al menos un componente")
+                                else:
+                                    st.warning("⚠️ Primero selecciona pacientes en la pestaña anterior")
+                            
+                            with tab_preview:
+                                if st.session_state.pacientes_seleccionados and componentes_seleccionados:
+                                    st.markdown("##### 📋 Vista Previa de la Exportación")
+                                    
+                                    # Generar JSON personalizado
+                                    json_personalizado = generar_json_exportacion_personalizada(
+                                        df_filtrado,
+                                        st.session_state.pacientes_seleccionados,
+                                        componentes_seleccionados,
+                                        st.session_state.codigos_seleccionados,
+                                        curso_vida
+                                    )
+                                    
+                                    if json_personalizado:
+                                        # Mostrar resumen
+                                        col_res1, col_res2, col_res3 = st.columns(3)
+                                        with col_res1:
+                                            st.metric("Pacientes", json_personalizado['total_pacientes'])
+                                        with col_res2:
+                                            total_diagnosticos = sum(len(p['diagnosticos']) for p in json_personalizado['pacientes'])
+                                            st.metric("Total Diagnósticos", total_diagnosticos)
+                                        with col_res3:
+                                            st.metric("Curso de Vida", curso_vida.split(' ')[0])
+                                        
+                                        # Vista previa del JSON
+                                        st.json(json_personalizado)
+                                        
+                                        # Botón de descarga
+                                        json_str = json.dumps(json_personalizado, indent=2, ensure_ascii=False)
+                                        nombre_archivo = f"correccion_personalizada_{curso_vida.lower().replace(' ', '_').replace('(', '').replace(')', '')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+                                        
+                                        st.download_button(
+                                            label="💾 Descargar JSON Personalizado",
+                                            data=json_str,
+                                            file_name=nombre_archivo,
+                                            mime="application/json",
+                                            type="primary",
+                                            key="download_json_custom"
+                                        )
+                                    else:
+                                        st.error("Error al generar el JSON personalizado")
+                                else:
+                                    st.info("📌 Completa la selección de pacientes y componentes en las pestañas anteriores")
+                    
+                    # Gráfico de componentes
+                    st.markdown("### 📈 Cumplimiento por Componente")
+                    
+                    # Estadísticas según curso de vida
+                    if curso_vida == "Adulto (30-59 años)":
+                        componentes_stats = {
+                            'Valoración Clínica': len(df_paquetes[df_paquetes['Val. Clínica'] == '✅']),
+                            'Tamizaje Depresión': len(df_paquetes[df_paquetes['Depresión'] == '✅']),
+                            'Tamizaje Violencia': len(df_paquetes[df_paquetes['Violencia'] == '✅']),
+                            'Tamizaje VIH': len(df_paquetes[df_paquetes['VIH'] == '✅']),
+                            'Agudeza Visual': len(df_paquetes[df_paquetes['Agudeza Visual'] == '✅']),
+                            'Evaluación Oral': len(df_paquetes[df_paquetes['Eval. Oral'] == '✅']),
+                            'Alcohol/Drogas': len(df_paquetes[df_paquetes['Alcohol/Drogas'] == '✅'])
+                        }
+                    elif curso_vida == "Joven (18-29 años)":
+                        componentes_stats = {
+                            'Valoración Clínica': len(df_paquetes[df_paquetes['Val. Clínica'] == '✅']),
+                            'Tamizaje Violencia': len(df_paquetes[df_paquetes['Violencia'] == '✅']),
+                            'Alcohol/Drogas': len(df_paquetes[df_paquetes['Alcohol/Drogas'] == '✅']),
+                            'Tamizaje Depresión': len(df_paquetes[df_paquetes['Depresión'] == '✅']),
+                            'Eval. Nutricional': len(df_paquetes[df_paquetes['Eval. Nutricional'] == '✅']),
+                            'Consejería SSR': len(df_paquetes[df_paquetes['Consejería SSR'] == '✅'])
+                        }
+                    else:  # Adulto Mayor
+                        componentes_stats = {
+                            'VACAM': len(df_paquetes[df_paquetes['VACAM'] == '✅']),
+                            'Agudeza Visual': len(df_paquetes[df_paquetes['Agudeza Visual'] == '✅']),
+                            'Salud Mental': len(df_paquetes[df_paquetes['Salud Mental'] == '✅']),
+                            'Evaluación Oral': len(df_paquetes[df_paquetes['Eval. Oral'] == '✅']),
+                            'Vacuna Influenza': len(df_paquetes[df_paquetes['Vac. Influenza'] == '✅']),
+                            'Consejería': len(df_paquetes[df_paquetes['Consejería'] == '✅']),
+                            'Val. Clínica/Lab': len(df_paquetes[df_paquetes['Val. Clínica/Lab'] == '✅'])
+                        }
+                    
+                    fig_componentes = px.bar(
+                        x=list(componentes_stats.keys()),
+                        y=list(componentes_stats.values()),
+                        title="Cumplimiento por Componente del Paquete",
+                        labels={'x': 'Componente', 'y': f'N° de {grupo_etario}'}
+                    )
+                    fig_componentes.add_hline(
+                        y=total_personas, 
+                        line_dash="dash", 
+                        annotation_text=f"Total: {total_personas}"
+                    )
+                    st.plotly_chart(fig_componentes, use_container_width=True)
+                    
+                    # Descargar reporte
+                    if st.button("📥 Descargar Reporte de Paquetes", key="btn_descargar_paquetes"):
+                        csv = df_paquetes.to_csv(index=False, encoding='latin-1')
+                        b64 = base64.b64encode(csv.encode('latin-1')).decode()
+                        href = f'<a href="data:file/csv;base64,{b64}" download="reporte_paquetes_integral.csv">Descargar CSV</a>'
+                        st.markdown(href, unsafe_allow_html=True)
+                
+                else:
+                    st.warning(f"No se encontraron registros de {grupo_etario.lower()} ({edad_min}-{edad_max} años) en el período seleccionado.")
     
     else:
         # Instrucciones cuando no hay datos
@@ -1234,6 +2257,528 @@ def main():
         </div>""",
         unsafe_allow_html=True
     )
+
+# ==============================================================================
+# FUNCIONES DE EXPORTACIÓN JSON PARA AUTOMATIZACIÓN HIS-MINSA
+# ==============================================================================
+
+def obtener_codigos_faltantes_paquete(df_paciente, curso_vida):
+    """
+    Identifica qué códigos le faltan a un paciente para completar su paquete integral
+    Retorna lista de diagnósticos faltantes con formato para JSON
+    """
+    codigos_faltantes = []
+    
+    # Obtener información según curso de vida
+    if curso_vida == "Adulto (30-59 años)":
+        paquete_info = PAQUETE_INTEGRAL_ADULTO
+        verificar_func = verificar_paquete_adulto
+        edad_paciente = df_paciente['edad_anos'].iloc[0]
+    elif curso_vida == "Joven (18-29 años)":
+        paquete_info = PAQUETE_INTEGRAL_JOVEN
+        verificar_func = verificar_paquete_joven
+        edad_paciente = df_paciente['edad_anos'].iloc[0]
+    else:  # Adulto Mayor
+        paquete_info = PAQUETE_INTEGRAL_ADULTO_MAYOR
+        verificar_func = verificar_paquete_adulto_mayor
+        edad_paciente = df_paciente['edad_anos'].iloc[0]
+    
+    # Verificar qué tiene y qué le falta
+    dni = df_paciente['pac_Numero_Documento'].iloc[0]
+    resultado_paquete = verificar_func(df_paciente, dni)
+    
+    # Revisar cada componente del paquete
+    for componente in paquete_info['componentes_minimos']:
+        if not resultado_paquete['componentes'].get(componente['componente'], False):
+            # Este componente le falta, obtener los códigos necesarios
+            if 'indicador' in componente:
+                # Buscar el indicador correspondiente
+                if curso_vida == "Adulto (30-59 años)":
+                    indicador_info = INDICADORES_ADULTO.get(componente['indicador'], {})
+                elif curso_vida == "Joven (18-29 años)":
+                    indicador_info = INDICADORES_JOVEN.get(componente['indicador'], {})
+                else:
+                    indicador_info = INDICADORES_ADULTO_MAYOR.get(componente['indicador'], {})
+                
+                # Procesar reglas del indicador
+                if 'reglas' in indicador_info:
+                    reglas = indicador_info['reglas']
+                    
+                    # Manejar diferentes estructuras de reglas
+                    if isinstance(reglas, dict):
+                        # Caso especial: reglas con opciones (ej: agudeza visual)
+                        if 'opcion_a' in reglas:
+                            # Por defecto usar opción A
+                            for codigo_info in reglas['opcion_a'].get('codigos', []):
+                                codigos_faltantes.append(crear_diagnostico_json(codigo_info))
+                    elif isinstance(reglas, list):
+                        # Reglas normales
+                        for regla in reglas:
+                            # Verificar si esta regla específica ya fue cumplida
+                            if not verificar_codigo_existe(df_paciente, regla['codigo']):
+                                # Para valoración clínica de adultos, no incluir Z017 aquí
+                                if curso_vida == "Adulto (30-59 años)" and componente['indicador'] == 'valoracion_clinica_lab':
+                                    # Solo agregar los códigos básicos (Z019, 99199.22, 99401.13)
+                                    # El Z017 se maneja aparte según la edad
+                                    codigos_faltantes.append(crear_diagnostico_json(regla))
+                                elif curso_vida == "Adulto Mayor (60+ años)" and componente['indicador'] == 'valoracion_clinica_lab':
+                                    # Para adulto mayor, laboratorio SIEMPRE obligatorio
+                                    codigos_faltantes.append(crear_diagnostico_json(regla))
+                                else:
+                                    codigos_faltantes.append(crear_diagnostico_json(regla))
+                
+                # Agregar Z017 para adultos 40-59 si es valoración clínica
+                if (componente['indicador'] == 'valoracion_clinica_lab' and 
+                    curso_vida == "Adulto (30-59 años)" and 
+                    edad_paciente >= 40 and edad_paciente <= 59):
+                    if not verificar_codigo_existe(df_paciente, 'Z017'):
+                        codigos_faltantes.append({
+                            "codigo": "Z017",
+                            "descripcion": "Z017 - Tamizaje laboratorial",
+                            "tipo": "D",
+                            "lab": ""
+                        })
+            
+            # Manejo especial para componentes con reglas por edad (paquete adulto)
+            elif 'reglas_30_39' in componente or 'reglas_40_59' in componente:
+                if edad_paciente >= 30 and edad_paciente <= 39 and 'reglas_30_39' in componente:
+                    for regla in componente['reglas_30_39']:
+                        if not verificar_codigo_existe(df_paciente, regla['codigo']):
+                            if 'condicion' in regla and regla['codigo'] == 'Z017':
+                                # Laboratorio condicional
+                                factores_riesgo = regla.get('factores_riesgo', [])
+                                tiene_factores = any(df_paciente['Codigo_Item'].isin(factores_riesgo))
+                                if tiene_factores:
+                                    codigos_faltantes.append(crear_diagnostico_json(regla))
+                            else:
+                                codigos_faltantes.append(crear_diagnostico_json(regla))
+                elif edad_paciente >= 40 and edad_paciente <= 59 and 'reglas_40_59' in componente:
+                    for regla in componente['reglas_40_59']:
+                        if not verificar_codigo_existe(df_paciente, regla['codigo']):
+                            codigos_faltantes.append(crear_diagnostico_json(regla))
+    
+    # Agregar código de plan si no lo tiene
+    if not resultado_paquete['plan_elaborado']:
+        codigos_faltantes.append({
+            "codigo": "99801",
+            "descripcion": "99801 - Plan de Atención Integral Elaborado",
+            "tipo": "D",
+            "lab": "1"
+        })
+    
+    if not resultado_paquete['plan_ejecutado']:
+        codigos_faltantes.append({
+            "codigo": "99801",
+            "descripcion": "99801 - Plan de Atención Integral Ejecutado",
+            "tipo": "D",
+            "lab": "TA"
+        })
+    
+    return codigos_faltantes
+
+def verificar_codigo_existe(df_paciente, codigo):
+    """Verifica si un código ya existe en los registros del paciente"""
+    return not df_paciente[df_paciente['Codigo_Item'] == codigo].empty
+
+def crear_diagnostico_json(regla):
+    """Crea un diagnóstico en formato JSON a partir de una regla"""
+    # Obtener descripción del diccionario CIE10 si está disponible
+    codigo = regla['codigo']
+    descripcion_cie = ""
+    if hasattr(st.session_state, 'cie10_dict') and codigo in st.session_state.cie10_dict:
+        descripcion_cie = st.session_state.cie10_dict[codigo]
+    else:
+        descripcion_cie = regla.get('descripcion', 'Descripción no disponible')
+    
+    diagnostico = {
+        "codigo": codigo,
+        "descripcion": f"{codigo} - {descripcion_cie}",
+        "tipo": regla.get('tipo_dx', 'D')
+    }
+    
+    # Primero verificar si hay un valor 'lab' directo en la regla (como en reglas_30_39, reglas_40_59)
+    if 'lab' in regla:
+        if isinstance(regla['lab'], list):
+            # Si es lista, usar el primer valor
+            diagnostico["lab"] = regla['lab'][0]
+        elif isinstance(regla['lab'], str):
+            diagnostico["lab"] = regla['lab']
+    # Luego verificar lab_valores (estructura de indicadores)
+    elif 'lab_valores' in regla and regla['lab_valores']:
+        if isinstance(regla['lab_valores'], list) and len(regla['lab_valores']) > 0:
+            # Usar el primer valor no vacío
+            lab_val = next((v for v in regla['lab_valores'] if v != ""), None)
+            if lab_val:
+                diagnostico["lab"] = lab_val
+        elif isinstance(regla['lab_valores'], str) and regla['lab_valores']:
+            diagnostico["lab"] = regla['lab_valores']
+    
+    # Casos especiales de LAB según el código
+    if codigo == 'Z019' and 'lab' not in diagnostico:
+        diagnostico["lab"] = "DNT"
+    elif codigo == '99199.22' and 'lab' not in diagnostico:
+        diagnostico["lab"] = "N"  # Normal por defecto
+    elif codigo == '99387' and 'lab' not in diagnostico:
+        diagnostico["lab"] = "AS"  # Autosuficiente por defecto para VACAM
+    elif codigo == '99215.03' and 'lab' not in diagnostico:
+        diagnostico["lab"] = "AS"  # Autosuficiente por defecto para VACAM alternativo
+    elif codigo in ['99209.02', '99209.04'] and 'lab' not in diagnostico:
+        diagnostico["lab"] = "RSM"  # Riesgo de Salud Metabólica por defecto para valoración nutricional
+    elif codigo == '99801':
+        # Plan de atención integral - se maneja en la función principal
+        pass
+    
+    return diagnostico
+
+def generar_json_exportacion(df_filtrado, filtro_estado, curso_vida):
+    """
+    Genera el JSON de exportación para pacientes con paquetes incompletos
+    Compatible con el script de automatización HIS-MINSA
+    """
+    pacientes_json = []
+    
+    # Filtrar según el estado seleccionado
+    if filtro_estado == "Incompletos":
+        # Obtener solo pacientes con paquete incompleto
+        pacientes_procesar = []
+        for dni in df_filtrado['pac_Numero_Documento'].unique():
+            df_dni = df_filtrado[df_filtrado['pac_Numero_Documento'] == dni]
+            if curso_vida == "Adulto (30-59 años)":
+                resultado = verificar_paquete_adulto(df_dni, dni)
+            elif curso_vida == "Joven (18-29 años)":
+                resultado = verificar_paquete_joven(df_dni, dni)
+            else:
+                resultado = verificar_paquete_adulto_mayor(df_dni, dni)
+            
+            if not resultado['completo']:
+                pacientes_procesar.append(dni)
+    elif filtro_estado == "Casi Completos (1-2 faltantes)":
+        # Filtrar por componentes faltantes
+        pacientes_procesar = []
+        # Determinar número total de componentes según curso de vida
+        if curso_vida == "Adulto (30-59 años)":
+            num_componentes_total = 7
+        elif curso_vida == "Joven (18-29 años)":
+            num_componentes_total = 6
+        else:  # Adulto Mayor
+            num_componentes_total = 7
+            
+        for dni in df_filtrado['pac_Numero_Documento'].unique():
+            df_dni = df_filtrado[df_filtrado['pac_Numero_Documento'] == dni]
+            if curso_vida == "Adulto (30-59 años)":
+                resultado = verificar_paquete_adulto(df_dni, dni)
+            elif curso_vida == "Joven (18-29 años)":
+                resultado = verificar_paquete_joven(df_dni, dni)
+            else:
+                resultado = verificar_paquete_adulto_mayor(df_dni, dni)
+            
+            # Calcular componentes completados
+            componentes_completados = sum(resultado['componentes'].values())
+            componentes_faltantes = num_componentes_total - componentes_completados
+            
+            # Si le faltan 1 o 2 componentes
+            if componentes_faltantes in [1, 2] and not resultado['completo']:
+                pacientes_procesar.append(dni)
+    else:
+        return None
+    
+    # Procesar cada paciente
+    for dni in pacientes_procesar[:100]:  # Limitar a 100 por rendimiento
+        df_paciente = df_filtrado[df_filtrado['pac_Numero_Documento'] == dni]
+        info_paciente = df_paciente.iloc[0]
+        
+        # Obtener códigos faltantes
+        codigos_faltantes = obtener_codigos_faltantes_paquete(df_paciente, curso_vida)
+        
+        if codigos_faltantes:
+            # Optimizar códigos antes de agregar
+            codigos_optimizados = optimizar_codigos_exportacion(codigos_faltantes)
+            
+            paciente_json = {
+                "dni": dni,
+                "nombre": info_paciente['Paciente_Completo'],
+                "edad": str(int(info_paciente['edad_anos'])),
+                "sexo": info_paciente['pac_Genero'],
+                "diagnosticos": codigos_optimizados
+            }
+            pacientes_json.append(paciente_json)
+    
+    # Estructura final del JSON
+    fecha_actual = datetime.now()
+    json_exportacion = {
+        "fecha_exportacion": fecha_actual.isoformat(),
+        "dia_his": str(fecha_actual.day),
+        "fecha_atencion": fecha_actual.strftime("%Y-%m-%d"),
+        "curso_vida": curso_vida,
+        "tipo_correccion": "paquete_integral_incompleto",
+        "total_pacientes": len(pacientes_json),
+        "cambios_realizados": 0,
+        "pacientes": pacientes_json
+    }
+    
+    return json_exportacion
+
+def generar_json_exportacion_personalizada(df_filtrado, pacientes_seleccionados, componentes_seleccionados, codigos_seleccionados_dict, curso_vida):
+    """
+    Genera JSON personalizado con selección específica de pacientes y códigos
+    """
+    pacientes_json = []
+    
+    # Obtener configuración de exportación
+    exportar_solo_faltantes = st.session_state.get('exportar_solo_faltantes', True)
+    
+    # Obtener información de referencia según curso de vida
+    if curso_vida == "Adulto (30-59 años)":
+        paquete_info = PAQUETE_INTEGRAL_ADULTO
+        componentes_disponibles = paquete_info['componentes_minimos']
+        indicadores_ref = INDICADORES_ADULTO
+    elif curso_vida == "Joven (18-29 años)":
+        paquete_info = PAQUETE_INTEGRAL_JOVEN
+        componentes_disponibles = paquete_info['componentes_minimos']
+        indicadores_ref = INDICADORES_JOVEN
+    else:
+        paquete_info = PAQUETE_INTEGRAL_ADULTO_MAYOR
+        componentes_disponibles = paquete_info['componentes_minimos']
+        indicadores_ref = INDICADORES_ADULTO_MAYOR
+    
+    # Procesar cada paciente seleccionado
+    for dni in pacientes_seleccionados:
+        df_paciente = df_filtrado[df_filtrado['pac_Numero_Documento'] == dni]
+        if df_paciente.empty:
+            continue
+            
+        info_paciente = df_paciente.iloc[0]
+        edad_paciente = info_paciente['edad_anos']
+        
+        # Recolectar códigos para este paciente
+        codigos_paciente = []
+        
+        # Procesar cada componente seleccionado
+        for comp_nombre in componentes_seleccionados:
+            # Saltar el Plan de Atención Integral ya que se maneja por separado
+            if comp_nombre == "Plan de Atención Integral":
+                continue
+                
+            # Encontrar el componente
+            componente = next((c for c in componentes_disponibles if c['componente'] == comp_nombre), None)
+            
+            if componente and 'indicador' in componente:
+                indicador_key = componente['indicador']
+                
+                # Si hay códigos seleccionados específicos para este indicador
+                if indicador_key in codigos_seleccionados_dict and codigos_seleccionados_dict[indicador_key]:
+                    codigos_seleccionados_indicador = codigos_seleccionados_dict[indicador_key]
+                    
+                    # Agregar cada código seleccionado
+                    for codigo_info in codigos_seleccionados_indicador:
+                        # Verificar si debemos incluirlo según la configuración
+                        if exportar_solo_faltantes and verificar_codigo_existe(df_paciente, codigo_info['codigo']):
+                            continue  # Saltar si ya existe y solo queremos faltantes
+                            
+                        # Crear diagnóstico JSON
+                        diagnostico = crear_diagnostico_json(codigo_info['regla'])
+                        
+                        # Aplicar lógica especial para casos específicos
+                        if aplicar_logica_especial_codigo(codigo_info['codigo'], edad_paciente, df_paciente, curso_vida):
+                            codigos_paciente.append(diagnostico)
+                else:
+                    # Si no está en el diccionario o está vacío, incluir todos los códigos del indicador
+                    indicador_info = indicadores_ref.get(indicador_key, {})
+                    if 'reglas' in indicador_info:
+                        reglas = indicador_info['reglas']
+                        
+                        if isinstance(reglas, list):
+                            for regla in reglas:
+                                # Verificar si debemos incluirlo según la configuración
+                                codigo_existe = verificar_codigo_existe(df_paciente, regla['codigo'])
+                                if exportar_solo_faltantes and codigo_existe:
+                                    continue  # Saltar si ya existe y solo queremos faltantes
+                                
+                                # Aplicar lógica especial solo para casos específicos
+                                incluir_codigo = True
+                                
+                                # Caso especial: laboratorio para adultos 30-39
+                                if (regla['codigo'] == 'Z017' and curso_vida == "Adulto (30-59 años)" and 
+                                    edad_paciente >= 30 and edad_paciente <= 39):
+                                    factores_riesgo = ["E65X", "E669", "E6691", "E6692", "E6693", "E6690", 
+                                                     "Z720", "Z721", "Z723", "Z724", "Z783", "Z784"]
+                                    incluir_codigo = any(df_paciente['Codigo_Item'].isin(factores_riesgo))
+                                
+                                if incluir_codigo:
+                                    codigos_paciente.append(crear_diagnostico_json(regla))
+                        
+                        # Agregar laboratorio Z017 para adultos 40-59 si es valoración clínica
+                        if (indicador_key == 'valoracion_clinica_lab' and 
+                            curso_vida == "Adulto (30-59 años)" and 
+                            edad_paciente >= 40 and edad_paciente <= 59):
+                            
+                            # Verificar si necesita Z017
+                            if exportar_solo_faltantes:
+                                if not verificar_codigo_existe(df_paciente, 'Z017'):
+                                    codigos_paciente.append({
+                                        "codigo": "Z017",
+                                        "descripcion": "Z017 - Tamizaje laboratorial",
+                                        "tipo": "D",
+                                        "lab": ""
+                                    })
+                            else:
+                                codigos_paciente.append({
+                                    "codigo": "Z017",
+                                    "descripcion": "Z017 - Tamizaje laboratorial", 
+                                    "tipo": "D",
+                                    "lab": ""
+                                })
+                        
+                        elif isinstance(reglas, dict) and 'opcion_a' in reglas:
+                            # Caso especial de opciones (ej: agudeza visual)
+                            for codigo_info in reglas['opcion_a'].get('codigos', []):
+                                codigo_existe = verificar_codigo_existe(df_paciente, codigo_info['codigo'])
+                                if exportar_solo_faltantes and codigo_existe:
+                                    continue  # Saltar si ya existe y solo queremos faltantes
+                                    
+                                codigos_paciente.append(crear_diagnostico_json(codigo_info))
+            
+            # Manejo especial para componentes con reglas por edad (sin indicador)
+            elif 'reglas_30_39' in componente or 'reglas_40_59' in componente:
+                if edad_paciente >= 30 and edad_paciente <= 39 and 'reglas_30_39' in componente:
+                    for regla in componente['reglas_30_39']:
+                        if not verificar_codigo_existe(df_paciente, regla['codigo']):
+                            if 'condicion' in regla and regla['codigo'] == 'Z017':
+                                # Verificar factores de riesgo
+                                factores_riesgo = regla.get('factores_riesgo', [])
+                                tiene_factores = any(df_paciente['Codigo_Item'].isin(factores_riesgo))
+                                if tiene_factores:
+                                    codigos_paciente.append(crear_diagnostico_json(regla))
+                            else:
+                                codigos_paciente.append(crear_diagnostico_json(regla))
+                elif edad_paciente >= 40 and edad_paciente <= 59 and 'reglas_40_59' in componente:
+                    for regla in componente['reglas_40_59']:
+                        if not verificar_codigo_existe(df_paciente, regla['codigo']):
+                            codigos_paciente.append(crear_diagnostico_json(regla))
+        
+        # Agregar plan de atención si está seleccionado
+        if 'plan_atencion' in codigos_seleccionados_dict:
+            plan_config = codigos_seleccionados_dict['plan_atencion']
+            
+            # Verificar si ya tiene plan elaborado
+            tiene_plan_elaborado = not df_paciente[
+                (df_paciente['Codigo_Item'] == '99801') & 
+                (df_paciente['Valor_Lab'] == '1')
+            ].empty
+            
+            # Verificar si ya tiene plan ejecutado
+            tiene_plan_ejecutado = not df_paciente[
+                (df_paciente['Codigo_Item'] == '99801') & 
+                (df_paciente['Valor_Lab'] == 'TA')
+            ].empty
+            
+            if plan_config.get('elaborado', False):
+                if not exportar_solo_faltantes or not tiene_plan_elaborado:
+                    codigos_paciente.append({
+                        "codigo": "99801",
+                        "descripcion": "99801 - Plan de Atención Integral Elaborado",
+                        "tipo": "D",
+                        "lab": "1"
+                    })
+            
+            if plan_config.get('ejecutado', False):
+                if not exportar_solo_faltantes or not tiene_plan_ejecutado:
+                    codigos_paciente.append({
+                        "codigo": "99801",
+                        "descripcion": "99801 - Plan de Atención Integral Ejecutado",
+                        "tipo": "D",
+                        "lab": "TA"
+                    })
+        
+        # Si hay códigos para este paciente, agregarlo al JSON
+        if codigos_paciente:
+            # Optimizar códigos antes de agregar
+            codigos_optimizados = optimizar_codigos_exportacion(codigos_paciente)
+            
+            paciente_json = {
+                "dni": dni,
+                "nombre": info_paciente['Paciente_Completo'],
+                "edad": str(int(edad_paciente)),
+                "sexo": info_paciente['pac_Genero'],
+                "diagnosticos": codigos_optimizados
+            }
+            pacientes_json.append(paciente_json)
+    
+    # Estructura final del JSON
+    fecha_actual = datetime.now()
+    json_exportacion = {
+        "fecha_exportacion": fecha_actual.isoformat(),
+        "dia_his": str(fecha_actual.day),
+        "fecha_atencion": fecha_actual.strftime("%Y-%m-%d"),
+        "curso_vida": curso_vida,
+        "tipo_correccion": "paquete_integral_personalizado",
+        "modo_exportacion": "seleccion_personalizada",
+        "componentes_incluidos": componentes_seleccionados,
+        "total_pacientes": len(pacientes_json),
+        "total_diagnosticos": sum(len(p['diagnosticos']) for p in pacientes_json),
+        "cambios_realizados": 0,
+        "pacientes": pacientes_json
+    }
+    
+    return json_exportacion
+
+def aplicar_logica_especial_codigo(codigo, edad_paciente, df_paciente, curso_vida):
+    """
+    Aplica lógica especial para determinar si un código debe incluirse
+    basado en edad, factores de riesgo u otras condiciones
+    """
+    # Laboratorio para adultos 30-39 años
+    if codigo == 'Z017' and curso_vida == "Adulto (30-59 años)" and edad_paciente >= 30 and edad_paciente <= 39:
+        # Verificar factores de riesgo
+        factores_riesgo = ["E65X", "E669", "E6691", "E6692", "E6693", "E6690", 
+                         "Z720", "Z721", "Z723", "Z724", "Z783", "Z784"]
+        tiene_factores = any(df_paciente['Codigo_Item'].isin(factores_riesgo))
+        return tiene_factores
+    
+    # Para adultos 40-59 y adultos mayores, laboratorio siempre
+    if codigo == 'Z017' and (
+        (curso_vida == "Adulto (30-59 años)" and edad_paciente >= 40) or
+        curso_vida == "Adulto Mayor (60+ años)"
+    ):
+        return True
+    
+    # Por defecto, incluir el código
+    return True
+
+def optimizar_codigos_exportacion(codigos_list):
+    """
+    Optimiza la lista de códigos eliminando duplicados y agrupando consejerías
+    """
+    # Eliminar duplicados exactos
+    codigos_unicos = {}
+    for codigo in codigos_list:
+        key = f"{codigo['codigo']}_{codigo.get('lab', '')}"
+        if key not in codigos_unicos:
+            codigos_unicos[key] = codigo
+    
+    # Convertir de vuelta a lista
+    codigos_optimizados = list(codigos_unicos.values())
+    
+    # Identificar códigos de tamizaje de salud mental
+    codigos_salud_mental = ['96150.01', '96150.02', '96150.03', '96150.04', '96150.07']
+    consejerias_salud_mental = ['99402.01', '99402.09']
+    
+    # Verificar si hay tamizajes de salud mental
+    tiene_tamizajes_sm = any(c['codigo'] in codigos_salud_mental for c in codigos_optimizados)
+    
+    if tiene_tamizajes_sm:
+        # Eliminar todas las consejerías de salud mental existentes
+        codigos_optimizados = [c for c in codigos_optimizados if c['codigo'] not in consejerias_salud_mental]
+        
+        # Agregar una sola consejería de salud mental (99402.09)
+        codigos_optimizados.append({
+            "codigo": "99402.09",
+            "descripcion": "99402.09 - Consejería en salud mental",
+            "tipo": "D",
+            "lab": ""
+        })
+    
+    return codigos_optimizados
 
 if __name__ == "__main__":
     main()

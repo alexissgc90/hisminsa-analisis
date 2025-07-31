@@ -37,9 +37,9 @@ pip install -r requirements.txt
 
 Necesitarás obtener los siguientes archivos maestros (no incluidos en el repositorio por seguridad):
 
-- `MaestroPaciente952732.csv`
-- `MaestroPersonal951318.csv`
-- `MaestroRegistrador952399.csv`
+- `MaestroPaciente.csv`
+- `MaestroPersonal.csv`
+- `MaestroRegistrador.csv`
 - `codigos_descripcion.xlsx`
 
 Colócalos en la carpeta raíz del proyecto.
@@ -58,13 +58,14 @@ La aplicación se abrirá automáticamente en tu navegador en `http://localhost:
 hisminsa-analisis/
 │
 ├── app_web_flexible.py          # Aplicación principal
+├── indicadores_adulto.py        # Módulo de indicadores curso de vida adulto
 ├── requirements.txt             # Dependencias
 ├── README.md                    # Documentación
 ├── codigos_descripcion.xlsx     # Descripciones (obtener por separado)
 │
-├── MaestroPaciente952732.csv    # Archivos maestros (obtener por separado)
-├── MaestroPersonal951318.csv
-├── MaestroRegistrador952399.csv
+├── MaestroPaciente.csv    # Archivos maestros (obtener por separado)
+├── MaestroPersonal.csv
+├── MaestroRegistrador.csv
 │
 └── consolidados/                # Carpeta para tus archivos de datos
     └── consolidado-fecha.csv

@@ -18,9 +18,9 @@ python -m streamlit run app_web_flexible.py
 ## 📁 Estructura de Archivos
 
 ### Archivos Maestros (Obligatorios)
-- `MaestroPaciente952732.csv` - Información de pacientes
-- `MaestroPersonal951318.csv` - Información del personal médico
-- `MaestroRegistrador952399.csv` - Información de registradores
+- `MaestroPaciente.csv` - Información de pacientes
+- `MaestroPersonal.csv` - Información del personal médico
+- `MaestroRegistrador.csv` - Información de registradores
 
 ### Archivos de Datos
 - `01-07-2025/consolidado 01-07-2025.csv` - Atenciones diarias
@@ -47,7 +47,7 @@ python -m streamlit run app_web_flexible.py
 - Por código de diagnóstico
 - Por establecimiento
 - Por turno y género
-- Por profesional de salud
+- Por profesional de salud ✅
 
 ### 3. Visualizaciones
 - Tabla interactiva con columnas personalizables
@@ -63,8 +63,17 @@ python -m streamlit run app_web_flexible.py
 - **Personal**: Nombre completo, colegiatura
 - **Registro**: Fechas de registro y modificación
 
-### 5. Exportación
+### 5. Supervisión de Indicadores (ACTUALIZADO 🆕)
+- **Múltiples Cursos de Vida**: Adulto (30-59 años), Joven (18-29 años) y Adulto Mayor (60+ años)
+- **Indicadores Individuales**: 15-17 indicadores por curso de vida
+- **Paquete de Atención Integral**: Verifica cumplimiento completo según edad
+- **Visualización de DNIs**: Muestra pacientes que cumplen cada indicador
+- **Supervisión detallada**: Revisa códigos específicos por DNI seleccionado
+- **Estadísticas en tiempo real**: Porcentaje de cumplimiento y clasificación
+
+### 6. Exportación
 - Descarga de datos filtrados en formato CSV
+- Descarga de reportes de indicadores
 - Mantiene codificación latin-1 para caracteres especiales
 
 ## 🔧 Solución de Problemas
@@ -88,10 +97,15 @@ Los archivos usan codificación latin-1 para manejar caracteres como Ñ
 2. **Búsqueda de paciente**: Filtra por DNI para ver historial
 3. **Análisis de productividad**: Filtra por profesional
 4. **Identificar tendencias**: Usa análisis temporal para ver patrones
+5. **Supervisión de indicadores**: Ve a la pestaña "🎯 Indicadores" para verificar cumplimiento
+6. **Auditoría de paquetes**: Analiza qué adultos, jóvenes o adultos mayores tienen su paquete de atención completo
 
 ## 🛠️ Estructura del Código
 
 - **app_web_flexible.py**: Aplicación principal con Streamlit
+- **indicadores_adulto.py**: Definiciones y lógica de indicadores del curso de vida adulto
+- **indicadores_joven.py**: Definiciones y lógica de indicadores del curso de vida joven
+- **indicadores_adulto_mayor.py**: Definiciones y lógica de indicadores del curso de vida adulto mayor
 - Usa `session_state` para mantener datos entre interacciones
 - Caché inteligente para evitar recargas innecesarias
 - Manejo robusto de errores y tipos de datos
