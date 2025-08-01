@@ -71,7 +71,7 @@ def obtener_indicadores_por_curso(curso: str):
     else:
         return INDICADORES_ADULTO_MAYOR, PAQUETE_INTEGRAL_ADULTO_MAYOR
 
-def generar_codigos_indicador(indicador_key: str, indicador_info: Dict, edad: int, curso: str) -> List[Dict]:
+def generar_codigos_indicador(indicador_key: str, indicador_info: Dict, edad: int, curso: str, tiene_factores: bool = False) -> List[Dict]:
     """Genera los códigos para un indicador específico"""
     codigos = []
     
@@ -99,6 +99,49 @@ def generar_codigos_indicador(indicador_key: str, indicador_info: Dict, edad: in
         ]
         return codigos
     
+    # Casos especiales: tamizajes de cáncer (próstata, colon) - formato específico
+    if indicador_key == 'cancer_prostata':
+        codigos = [
+            {"codigo": "84152", "descripcion": "84152 - Dosaje PSA", "tipo": "D", "lab": ""},
+            {"codigo": "84152", "descripcion": "84152 - Dosaje PSA", "tipo": "D", "lab": "N"},
+            {"codigo": "99402.08", "descripcion": "99402.08 - Consejería factores riesgo cáncer", "tipo": "D", "lab": "1"}
+        ]
+        return codigos
+    
+    if indicador_key == 'cancer_colon_recto':
+        codigos = [
+            {"codigo": "82270", "descripcion": "82270 - Test sangre oculta en heces", "tipo": "D", "lab": ""},
+            {"codigo": "82270", "descripcion": "82270 - Test sangre oculta en heces", "tipo": "D", "lab": "N"},
+            {"codigo": "99402.08", "descripcion": "99402.08 - Consejería factores riesgo cáncer", "tipo": "D", "lab": "1"}
+        ]
+        return codigos
+    
+    # Casos especiales: tamizajes de cáncer de cuello uterino
+    if indicador_key == 'cancer_cuello_uterino':
+        # Usar método principal según edad
+        if 25 <= edad <= 29:
+            # Prueba molecular VPH
+            codigos = [
+                {"codigo": "87621", "descripcion": "87621 - Prueba molecular VPH", "tipo": "D", "lab": ""},
+                {"codigo": "87621", "descripcion": "87621 - Prueba molecular VPH", "tipo": "D", "lab": "N"},
+                {"codigo": "99402.08", "descripcion": "99402.08 - Consejería factores riesgo cáncer", "tipo": "D", "lab": "1"}
+            ]
+        elif 30 <= edad <= 49:
+            # IVAA
+            codigos = [
+                {"codigo": "88141.01", "descripcion": "88141.01 - Inspección Visual con Ácido Acético", "tipo": "D", "lab": ""},
+                {"codigo": "88141.01", "descripcion": "88141.01 - Inspección Visual con Ácido Acético", "tipo": "D", "lab": "N"},
+                {"codigo": "99402.08", "descripcion": "99402.08 - Consejería factores riesgo cáncer", "tipo": "D", "lab": "1"}
+            ]
+        else:
+            # PAP
+            codigos = [
+                {"codigo": "88141", "descripcion": "88141 - Papanicolaou", "tipo": "D", "lab": ""},
+                {"codigo": "88141", "descripcion": "88141 - Papanicolaou", "tipo": "D", "lab": "N"},
+                {"codigo": "99402.08", "descripcion": "99402.08 - Consejería factores riesgo cáncer", "tipo": "D", "lab": "1"}
+            ]
+        return codigos
+    
     if 'reglas' in indicador_info and isinstance(indicador_info['reglas'], list):
         for regla in indicador_info['reglas']:
             # Aplicar lógica especial para laboratorio
@@ -113,14 +156,16 @@ def generar_codigos_indicador(indicador_key: str, indicador_info: Dict, edad: in
             }
             codigos.append(codigo_obj)
     
-    # Caso especial: laboratorio para adultos 40-59
-    if indicador_key == 'valoracion_clinica_lab' and curso == "adulto" and edad >= 40:
-        codigos.append({
-            "codigo": "Z017",
-            "descripcion": "Z017 - Tamizaje laboratorial",
-            "tipo": "D",
-            "lab": ""
-        })
+    # Caso especial: laboratorio para adultos
+    if curso == "adulto" and (indicador_key == 'valoracion_clinica_con_factores' or indicador_key == 'valoracion_clinica_sin_factores'):
+        # Agregar laboratorio si: 40-59 años O 30-39 con factores
+        if edad >= 40 or (30 <= edad <= 39 and tiene_factores):
+            codigos.append({
+                "codigo": "Z017",
+                "descripcion": "Z017 - Tamizaje laboratorial",
+                "tipo": "D",
+                "lab": ""
+            })
     
     return codigos
 
@@ -148,6 +193,136 @@ def obtener_valor_lab_default(regla: Dict, indicador_key: str) -> str:
             return regla['lab_valores'][0] if regla['lab_valores'][0] else ""
     
     return ""
+
+def generar_script_js(codigos: List[Dict], dni: str) -> str:
+    """Genera un script JS para automatizar el ingreso en HISMINSA usando el formato exacto de prostata.txt y colon.txt"""
+    
+    # Convertir códigos al formato del script
+    diagnosticos_js = []
+    for codigo in codigos:
+        # Manejo especial para códigos de tamizaje de cáncer
+        codigo_str = codigo["codigo"]
+        
+        # Si es un código de tamizaje de cáncer, generar el patrón especial
+        if codigo_str in ["82270", "84152", "87621"]:  # Colon, Próstata, Cuello uterino
+            # Primero sin LAB
+            diagnosticos_js.append(f"""        {{
+            codigo: "{codigo_str}",
+            tipo: "D",
+            lab: null  // Sin LAB
+        }}""")
+            # Luego con LAB = N
+            diagnosticos_js.append(f"""        {{
+            codigo: "{codigo_str}",
+            tipo: "D",
+            lab: "N"  // LAB = N
+        }}""")
+            # Luego la consejería con LAB = 1
+            diagnosticos_js.append(f"""        {{
+            codigo: "99402.08",
+            tipo: "D",
+            lab: "1"  // LAB = 1
+        }}""")
+        else:
+            # Para otros códigos, formato normal
+            lab_value = f'"{codigo.get("lab", "")}"' if codigo.get("lab") else "null"
+            diagnosticos_js.append(f"""        {{
+            codigo: "{codigo_str}",
+            tipo: "{codigo.get("tipo", "D")}",
+            lab: {lab_value}{"  // Sin LAB" if not codigo.get("lab") else f'  // LAB = {codigo.get("lab")}'}
+        }}""")
+    
+    # Template del script exacto como en prostata.txt y colon.txt
+    script_template = f"""// Script para ingresar los diagnósticos específicos
+  async function ingresarDiagnosticosEspecificos() {{
+      const diagnosticos = [
+{','.join(diagnosticos_js)}
+      ];
+
+      console.log('🚀 Iniciando ingreso de ' + diagnosticos.length + ' diagnósticos...');
+
+      for (let i = 0; i < diagnosticos.length; i++) {{
+          const dx = diagnosticos[i];
+          console.log(`\\n📍 Diagnóstico ${{i + 1}}/${{diagnosticos.length}}: ${{dx.codigo}}`);
+
+          try {{
+              // 1. Agregar nueva fila (Shift+1)
+              const gridview = document.querySelector('[id*="gridview-"]');
+              gridview.focus();
+              gridview.dispatchEvent(new KeyboardEvent('keydown', {{
+                  key: '1', keyCode: 49, shiftKey: true, bubbles: true
+              }}));
+              await new Promise(r => setTimeout(r, 1000));
+
+              // 2. Ingresar código
+              document.activeElement.value = dx.codigo;
+              ['input', 'keyup', 'change'].forEach(evt =>
+                  document.activeElement.dispatchEvent(new Event(evt, {{ bubbles: true }}))
+              );
+              await new Promise(r => setTimeout(r, 2000));
+
+              // 3. Seleccionar de lista (Enter)
+              document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {{
+                  key: 'Enter', keyCode: 13, bubbles: true
+              }}));
+              await new Promise(r => setTimeout(r, 1000));
+
+              // 4. Ingresar tipo D
+              const tabla = document.querySelector('[id*="gridpanel"]');
+              const filas = tabla.querySelectorAll('tr.x-grid-row, tr.x-grid3-row');
+              const ultimaFila = filas[filas.length - 1];
+              ultimaFila.cells[4].dispatchEvent(new MouseEvent('dblclick', {{ bubbles: true }}));       
+              await new Promise(r => setTimeout(r, 500));
+
+              document.activeElement.value = dx.tipo;
+              document.activeElement.dispatchEvent(new Event('change', {{ bubbles: true }}));
+              document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {{
+                  key: 'Enter', keyCode: 13, bubbles: true
+              }}));
+              await new Promise(r => setTimeout(r, 1000));
+
+              // 5. Si hay LAB, ingresarlo
+              if (dx.lab) {{
+                  console.log(`   → Ingresando LAB: ${{dx.lab}}`);
+                  document.body.dispatchEvent(new KeyboardEvent('keydown', {{
+                      key: 'Z', keyCode: 90, shiftKey: true, bubbles: true
+                  }}));
+                  await new Promise(r => setTimeout(r, 1500));
+
+                  document.activeElement.value = dx.lab;
+                  ['input', 'keyup', 'change'].forEach(evt =>
+                      document.activeElement.dispatchEvent(new Event(evt, {{ bubbles: true }}))
+                  );
+                  await new Promise(r => setTimeout(r, 500));
+                  document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {{
+                      key: 'Enter', keyCode: 13, bubbles: true
+                  }}));
+                  await new Promise(r => setTimeout(r, 1000));
+              }}
+
+              console.log(`✅ ${{dx.codigo}} ingresado` + (dx.lab ? ` con LAB=${{dx.lab}}` : ''));        
+
+          }} catch (error) {{
+              console.error(`❌ Error con ${{dx.codigo}}:`, error);
+          }}
+      }}
+
+      console.log('\\n✨ Proceso completado');
+      console.log('💾 Para guardar: guardarRegistro() o presiona Shift+A');
+  }}
+
+  // Función para guardar
+  function guardarRegistro() {{
+      document.body.dispatchEvent(new KeyboardEvent('keydown', {{
+          key: 'A', keyCode: 65, shiftKey: true, bubbles: true
+      }}));
+      console.log('💾 Guardando registro...');
+  }}
+
+  // Ejecutar automáticamente
+  ingresarDiagnosticosEspecificos();"""
+    
+    return script_template
 
 def optimizar_codigos(codigos: List[Dict]) -> List[Dict]:
     """Optimiza la lista eliminando duplicados y aplicando reglas"""
@@ -217,6 +392,26 @@ def main():
             nombre_completo = st.text_input("Nombre completo:", placeholder="APELLIDOS NOMBRES")
             sexo = st.selectbox("Sexo:", ["", "M", "F"], help="Dejar vacío si no se requiere")
         
+        # Datos antropométricos para calcular factores de riesgo
+        st.markdown("### 📏 Datos Antropométricos")
+        col_peso, col_talla = st.columns(2)
+        with col_peso:
+            peso = st.number_input("Peso (kg):", min_value=0.0, max_value=300.0, step=0.1, value=0.0)
+        with col_talla:
+            talla = st.number_input("Talla (cm):", min_value=0.0, max_value=250.0, step=0.1, value=0.0)
+        
+        # Calcular IMC si hay datos
+        imc = 0
+        tiene_sobrepeso = False
+        if peso > 0 and talla > 0:
+            talla_metros = talla / 100
+            imc = peso / (talla_metros ** 2)
+            if imc >= 25:
+                tiene_sobrepeso = True
+                st.warning(f"⚠️ IMC: {imc:.1f} - Sobrepeso/Obesidad detectado")
+            else:
+                st.success(f"✅ IMC: {imc:.1f} - Normal")
+        
         # Validar fecha y calcular edad
         edad = None
         curso_vida = None
@@ -266,8 +461,14 @@ def main():
                     
                     for comp in paquete['componentes_minimos']:
                         if 'indicador' in comp:
-                            ind_info = indicadores.get(comp['indicador'], {})
-                            codigos = generar_codigos_indicador(comp['indicador'], ind_info, edad, curso_vida)
+                            # Manejar valoración clínica según factores
+                            indicador_usar = comp['indicador']
+                            if comp['componente'] == "Valoración Clínica" and tiene_sobrepeso:
+                                # Cambiar a versión con factores si hay sobrepeso
+                                indicador_usar = indicador_usar.replace("sin_factores", "con_factores")
+                            
+                            ind_info = indicadores.get(indicador_usar, {})
+                            codigos = generar_codigos_indicador(indicador_usar, ind_info, edad, curso_vida, tiene_sobrepeso)
                             todos_codigos.extend(codigos)
                     
                     # IMPORTANTE: Agregar agudeza visual para TODOS los cursos de vida
@@ -279,6 +480,17 @@ def main():
                         if codigo['codigo'] not in codigos_existentes:
                             todos_codigos.extend(agudeza_codigos)
                             break  # Solo agregar una vez
+                    
+                    # Agregar diagnóstico de sobrepeso/obesidad si aplica
+                    if tiene_sobrepeso:
+                        codigo_obesidad = "E669" if imc >= 30 else "E66"
+                        desc_obesidad = "Obesidad" if imc >= 30 else "Sobrepeso"
+                        todos_codigos.append({
+                            "codigo": codigo_obesidad,
+                            "descripcion": f"{codigo_obesidad} - {desc_obesidad}",
+                            "tipo": "D",
+                            "lab": ""
+                        })
                     
                     # Plan de atención
                     if incluir_plan:
@@ -299,12 +511,25 @@ def main():
                 indicadores_seleccionados = []
                 
                 cols = st.columns(2)
-                for idx, (key, info) in enumerate(indicadores.items()):
-                    if key not in ['plan_atencion_elaborado', 'plan_atencion_ejecutado']:
-                        col = cols[idx % 2]
+                idx_col = 0
+                for key, info in indicadores.items():
+                    if key not in ['plan_atencion_elaborado', 'plan_atencion_ejecutado', 'plan_atencion_iniciado']:
+                        # Para valoración clínica, mostrar ambas opciones si aplica
+                        if key in ['valoracion_clinica_sin_factores', 'valoracion_clinica_con_factores']:
+                            nombre_mostrar = info['nombre']
+                            # Agregar nota sobre el uso automatico según IMC
+                            if key == 'valoracion_clinica_sin_factores':
+                                nombre_mostrar += " (auto si IMC < 25)"
+                            else:
+                                nombre_mostrar += " (auto si IMC ≥ 25)"
+                        else:
+                            nombre_mostrar = info['nombre']
+                        
+                        col = cols[idx_col % 2]
                         with col:
-                            if st.checkbox(info['nombre'], key=f"ind_{key}"):
+                            if st.checkbox(nombre_mostrar, key=f"ind_{key}"):
                                 indicadores_seleccionados.append(key)
+                        idx_col += 1
                 
                 # Plan de atención
                 st.markdown("---")
@@ -476,18 +701,57 @@ def generar_y_mostrar_json(dni: str, edad: str, codigos: List[Dict], dia_his: in
         st.metric("Edad", f"{edad} años")
     
     # Mostrar JSON
-    with st.expander("Ver JSON completo", expanded=True):
+    with st.expander("📄 Ver JSON completo", expanded=True):
         st.json(json_data)
     
-    # Botón de descarga
-    json_str = json.dumps(json_data, indent=2, ensure_ascii=False)
-    st.download_button(
-        label="⬇️ Descargar JSON",
-        data=json_str,
-        file_name=f"hisminsa_{dni}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-        mime="application/json",
-        type="primary"
-    )
+    # Mostrar instrucciones para el script JS
+    with st.expander("📜 Instrucciones para usar el Script JS", expanded=False):
+        st.markdown("""
+        ### 🚀 Cómo usar el script de automatización:
+        
+        1. **Abrir HISMINSA** en el navegador web
+        2. **Navegar** a la página de registro de diagnósticos del paciente
+        3. **Abrir la consola** del navegador (presionar `F12`)
+        4. **Ir a la pestaña "Console"**
+        5. **Copiar y pegar** todo el contenido del script JS descargado
+        6. **Presionar Enter** para ejecutar
+        7. **Confirmar** cuando el script pregunte si desea proceder
+        
+        ### ⚠️ Importante:
+        - El script simulará el ingreso manual de cada diagnóstico
+        - Espere a que termine antes de hacer otra acción
+        - Al final, confirmará si desea guardar con `Shift+A`
+        
+        ### 🔧 Atajos de teclado HISMINSA:
+        - `Shift+1`: Agregar nueva fila
+        - `Shift+Z`: Ir al campo LAB
+        - `Shift+A`: Guardar registro
+        """)
+    
+    # Opciones de descarga
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Botón de descarga JSON
+        json_str = json.dumps(json_data, indent=2, ensure_ascii=False)
+        st.download_button(
+            label="⬇️ Descargar JSON",
+            data=json_str,
+            file_name=f"hisminsa_{dni}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+            mime="application/json",
+            type="primary"
+        )
+    
+    with col2:
+        # Botón de descarga JS
+        js_str = generar_script_js(codigos_optimizados, dni)
+        st.download_button(
+            label="📜 Descargar Script JS",
+            data=js_str,
+            file_name=f"hisminsa_script_{dni}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.js",
+            mime="text/javascript",
+            type="secondary"
+        )
 
 if __name__ == "__main__":
     main()

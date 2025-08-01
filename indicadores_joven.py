@@ -7,9 +7,28 @@ Sistema HISMINSA - Supervisión de Indicadores
 
 # Diccionario completo de indicadores joven
 INDICADORES_JOVEN = {
-    "valoracion_clinica_riesgo": {
-        "nombre": "Valoración Clínica para Factores de Riesgo",
-        "descripcion": "Valoración clínica con consejería estilos de vida",
+    "valoracion_clinica_sin_factores": {
+        "nombre": "Valoración Clínica SIN Factores de Riesgo",
+        "descripcion": "Valoración clínica sin factores de riesgo identificados",
+        "edad_min": 18,
+        "edad_max": 29,
+        "reglas": [
+            {
+                "codigo": "Z019",
+                "descripcion": "Valoración clínica",
+                "tipo_dx": "D",
+                "lab_valores": ["DNT"],
+                "obligatorio": True
+            }
+        ],
+        "requiere_todos": True,
+        "frecuencia": "1 vez al año",
+        "meta": 100
+    },
+    
+    "valoracion_clinica_con_factores": {
+        "nombre": "Valoración Clínica CON Factores de Riesgo",
+        "descripcion": "Valoración clínica con factores de riesgo y consejería",
         "edad_min": 18,
         "edad_max": 29,
         "reglas": [
@@ -411,9 +430,10 @@ PAQUETE_INTEGRAL_JOVEN = {
     "descripcion": "Atención integral de salud para jóvenes 18-29 años",
     "componentes_minimos": [
         {
-            "componente": "Valoración Clínica y Factores de Riesgo",
-            "indicador": "valoracion_clinica_riesgo",
-            "obligatorio": True
+            "componente": "Valoración Clínica",
+            "indicador": "valoracion_clinica_sin_factores",
+            "obligatorio": True,
+            "nota": "Usar valoracion_clinica_con_factores si hay factores de riesgo"
         },
         {
             "componente": "Tamizaje Violencia Intrafamiliar",
@@ -471,8 +491,8 @@ def verificar_cumplimiento_indicador(df, indicador_key, fecha_inicio=None, fecha
         ]
     
     # Verificar reglas según tipo de indicador
-    if indicador_key == "valoracion_clinica_riesgo":
-        return verificar_valoracion_clinica(df_edad)
+    if indicador_key in ["valoracion_clinica_sin_factores", "valoracion_clinica_con_factores"]:
+        return verificar_valoracion_clinica(df_edad, indicador_key)
     elif indicador_key == "tamizaje_vih":
         return verificar_tamizaje_vih(df_edad)
     elif indicador_key == "acceso_anticonceptivos":
@@ -575,11 +595,10 @@ def verificar_indicador_todos(df, indicador):
     
     return df[df['pac_Numero_Documento'].isin(list(dni_cumple))]
 
-def verificar_valoracion_clinica(df):
-    """Verificación simplificada para valoración clínica (sin factores de riesgo)"""
-    # Ahora usamos la lógica estándar de verificar_indicador_todos
-    # ya que el indicador ha sido simplificado a una lista de reglas
-    return verificar_indicador_todos(df, INDICADORES_JOVEN['valoracion_clinica_riesgo'])
+def verificar_valoracion_clinica(df, indicador_key):
+    """Verificación para valoración clínica con o sin factores de riesgo"""
+    # Usar la lógica estándar según el indicador específico
+    return verificar_indicador_todos(df, INDICADORES_JOVEN[indicador_key])
 
 def verificar_tamizaje_vih(df):
     """Verificación especial para tamizaje VIH con su flujo específico"""

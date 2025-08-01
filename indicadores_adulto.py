@@ -393,9 +393,36 @@ INDICADORES_ADULTO = {
         "meta": 100
     },
     
-    "valoracion_clinica_lab": {
-        "nombre": "Valoración Clínica y Tamizaje Laboratorial",
-        "descripcion": "Valoración clínica con presión arterial y consejería (laboratorio solo 40-59 años)",
+    "valoracion_clinica_sin_factores": {
+        "nombre": "Valoración Clínica SIN Factores de Riesgo",
+        "descripcion": "Valoración clínica sin factores de riesgo (sin laboratorio para 30-39 años)",
+        "edad_min": 30,
+        "edad_max": 59,
+        "reglas": [
+            {
+                "codigo": "Z019",
+                "descripcion": "Valoración clínica",
+                "tipo_dx": "D",
+                "lab_valores": ["DNT"],
+                "obligatorio": True
+            },
+            {
+                "codigo": "99199.22",
+                "descripcion": "Tamizaje Presión Arterial",
+                "tipo_dx": "D",
+                "lab_valores": ["N", "A"],
+                "obligatorio": True
+            }
+        ],
+        "requiere_todos": True,
+        "frecuencia": "1 vez al año",
+        "meta": 100,
+        "nota": "Laboratorio Z017 solo para 40-59 años"
+    },
+    
+    "valoracion_clinica_con_factores": {
+        "nombre": "Valoración Clínica CON Factores de Riesgo",
+        "descripcion": "Valoración clínica con factores de riesgo y consejería (laboratorio según edad)",
         "edad_min": 30,
         "edad_max": 59,
         "reglas": [
@@ -424,7 +451,7 @@ INDICADORES_ADULTO = {
         "requiere_todos": True,
         "frecuencia": "1 vez al año",
         "meta": 100,
-        "nota": "Para simplificar, no incluye laboratorio Z017. Este se maneja por edad en el paquete."
+        "nota": "Laboratorio Z017 para 40-59 años o 30-39 con factores"
     }
 }
 
@@ -434,10 +461,10 @@ PAQUETE_INTEGRAL_ADULTO = {
     "descripcion": "Conjunto articulado de cuidados esenciales para adultos 30-59 años",
     "componentes_minimos": [
         {
-            "componente": "Valoración Clínica y Tamizaje Laboratorial",
-            "indicador": "valoracion_clinica_lab",
+            "componente": "Valoración Clínica",
+            "indicador": "valoracion_clinica_sin_factores",
             "obligatorio": True,
-            "nota": "El laboratorio Z017 se agrega automáticamente para 40-59 años"
+            "nota": "Usar valoracion_clinica_con_factores si hay factores de riesgo"
         },
         {
             "componente": "Tamizaje Trastornos Depresivos",
@@ -699,16 +726,30 @@ def verificar_paquete_integral(df, dni=None):
             resultados['componentes'][componente['componente']] = cumple
             cumplimientos.append(cumple)
         else:
-            # Verificar reglas específicas por edad
-            if componente['componente'] == "Valoración Clínica y Tamizaje Laboratorial":
+            # Verificar reglas específicas por edad y factores
+            if componente['componente'] == "Valoración Clínica":
                 edad = df[df['pac_Numero_Documento'] == dni]['edad_anos'].iloc[0] if not df.empty else 0
                 
-                if 30 <= edad <= 39:
-                    cumple = verificar_valoracion_clinica_30_39(df, dni)
-                elif 40 <= edad <= 59:
-                    cumple = verificar_valoracion_clinica_40_59(df, dni)
+                # Detectar si tiene factores de riesgo
+                factores_riesgo = ['E65X', 'E669', 'E6691', 'E6692', 'E6693', 'E6690', 
+                                  'Z720', 'Z721', 'Z723', 'Z724', 'Z783', 'Z784']
+                tiene_factores = not df[(df['pac_Numero_Documento'] == dni) & 
+                                      (df['Codigo_Item'].isin(factores_riesgo))].empty
+                
+                # Usar el indicador apropiado
+                if tiene_factores:
+                    df_cumple = verificar_cumplimiento_indicador(df, 'valoracion_clinica_con_factores')
                 else:
-                    cumple = False
+                    df_cumple = verificar_cumplimiento_indicador(df, 'valoracion_clinica_sin_factores')
+                
+                cumple = dni in df_cumple['pac_Numero_Documento'].unique() if df_cumple is not None else False
+                
+                # Verificar laboratorio adicional según edad
+                if cumple and (edad >= 40 or (30 <= edad <= 39 and tiene_factores)):
+                    tiene_lab = not df[(df['pac_Numero_Documento'] == dni) & 
+                                     (df['Codigo_Item'] == 'Z017') & 
+                                     (df['Tipo_Diagnostico'] == 'D')].empty
+                    cumple = cumple and tiene_lab
                 
                 resultados['componentes'][componente['componente']] = cumple
                 cumplimientos.append(cumple)

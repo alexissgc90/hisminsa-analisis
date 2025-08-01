@@ -4,14 +4,16 @@ Versión simplificada y práctica para generar JSON de indicadores rápidamente.
 
 ## 🚀 Características
 
-- **Solo lo esencial**: DNI + Fecha de nacimiento
-- **Detección automática** del curso de vida
+- **Solo lo esencial**: DNI + Fecha de nacimiento + Peso/Talla
+- **Detección automática** del curso de vida y factores de riesgo (IMC)
 - **3 modos de generación**:
   - 📦 Paquete Completo (todos los indicadores)
   - 📋 Indicadores Individuales (selección manual)
   - ⚠️ Factores de Riesgo (casos patológicos)
 - **Valores LAB por defecto** (normales/no patológicos)
 - **Optimización automática** de códigos
+- **Valoración clínica inteligente**: automáticamente selecciona con/sin factores según IMC
+- **Exportación dual**: JSON para respaldo y Script JS para automatización directa en HISMINSA
 
 ## 📝 Uso Rápido
 
@@ -27,6 +29,7 @@ streamlit run generador_json_simple.py
 ### 2. Ingresar datos básicos
 - **DNI**: 8 dígitos
 - **Fecha de nacimiento**: DD/MM/AAAA (ej: 15/06/1980)
+- **Peso y Talla**: Para calcular IMC y detectar factores de riesgo
 - **Datos opcionales**: Nombre completo y sexo (expandir para ver)
 
 ### 3. Seleccionar modo de generación
@@ -47,9 +50,16 @@ streamlit run generador_json_simple.py
 - Ajusta valores LAB (presión alterada, riesgo nutricional)
 - Incluye laboratorio para adultos 30-39 con factores
 
-### 4. Descargar JSON
-- Click en "⬇️ Descargar JSON"
-- Archivo listo para importar en HIS-MINSA
+### 4. Descargar resultados
+Dos opciones de descarga:
+- **⬇️ Descargar JSON**: Archivo JSON para procesamiento o respaldo
+- **📜 Descargar Script JS**: Script de automatización para consola del navegador
+
+#### Usar el Script JS:
+1. Abrir HISMINSA y navegar a registro de diagnósticos
+2. Abrir consola del navegador (F12)
+3. Pegar el script y presionar Enter
+4. El script automatizará el ingreso de todos los diagnósticos
 
 ## 🎯 Valores LAB Automáticos
 
@@ -70,9 +80,14 @@ Por defecto genera valores **normales/no patológicos**:
 
 ### Por Edad:
 - **Jóvenes (18-29)**: Sin laboratorio obligatorio
-- **Adultos (30-39)**: Laboratorio solo si hay factores de riesgo
+- **Adultos (30-39)**: Laboratorio solo si hay factores de riesgo o IMC ≥ 25
 - **Adultos (40-59)**: Laboratorio siempre incluido
 - **Adultos Mayores (60+)**: Todos los tamizajes
+
+### Valoración Clínica Automática:
+- **IMC < 25**: Usa valoración clínica SIN factores (solo Z019 + presión arterial)
+- **IMC ≥ 25**: Usa valoración clínica CON factores (Z019 + presión + consejería)
+- **Adultos 30-39 con IMC ≥ 25**: Se agrega automáticamente laboratorio Z017
 
 ### Optimizaciones:
 - Elimina códigos duplicados
@@ -83,8 +98,9 @@ Por defecto genera valores **normales/no patológicos**:
 
 ### Caso 1: Paciente sano sin factores
 1. Ingresa DNI y fecha
-2. Click en "Paquete Completo"
-3. Descargar JSON
+2. Ingresa peso/talla (IMC < 25)
+3. Click en "Paquete Completo"
+4. Descargar JSON (generará valoración clínica SIN factores)
 
 ### Caso 2: Completar indicadores faltantes
 1. Ingresa DNI y fecha
@@ -92,11 +108,15 @@ Por defecto genera valores **normales/no patológicos**:
 3. Marca solo los que faltan
 4. Descargar JSON
 
-### Caso 3: Paciente con obesidad e hipertensión
+### Caso 3: Paciente con sobrepeso detectado automáticamente
 1. Ingresa DNI y fecha
-2. Tab "Factores de Riesgo"
-3. Marca: Obesidad + Hipertensión
-4. Marca: Presión alterada (A)
+2. Ingresa peso/talla (IMC ≥ 25)
+3. Click en "Paquete Completo"
+4. Automáticamente:
+   - Detecta sobrepeso/obesidad
+   - Usa valoración clínica CON factores
+   - Agrega código E66/E669
+   - Si es adulto 30-39, agrega laboratorio Z017
 5. Descargar JSON
 
 ## 🔧 Configuración
