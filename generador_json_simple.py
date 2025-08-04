@@ -34,8 +34,10 @@ CURSOS_VIDA = {
 
 # Códigos de factores de riesgo más comunes
 FACTORES_RIESGO_SIMPLE = {
-    "obesidad": {"codigo": "E669", "descripcion": "Obesidad"},
-    "sobrepeso": {"codigo": "E66", "descripcion": "Sobrepeso"},
+    "sobrepeso": {"codigo": "E6690", "descripcion": "Sobrepeso"},
+    "obesidad_i": {"codigo": "E6691", "descripcion": "Obesidad grado I"},
+    "obesidad_ii": {"codigo": "E6692", "descripcion": "Obesidad grado II"},
+    "obesidad_iii": {"codigo": "E6693", "descripcion": "Obesidad grado III"},
     "alcohol": {"codigo": "Z721", "descripcion": "Problemas con el alcohol"},
     "tabaco": {"codigo": "Z720", "descripcion": "Problemas con el tabaco"},
     "drogas": {"codigo": "Z722", "descripcion": "Problemas con drogas"},
@@ -71,7 +73,58 @@ def obtener_indicadores_por_curso(curso: str):
     else:
         return INDICADORES_ADULTO_MAYOR, PAQUETE_INTEGRAL_ADULTO_MAYOR
 
-def generar_codigos_indicador(indicador_key: str, indicador_info: Dict, edad: int, curso: str, tiene_factores: bool = False) -> List[Dict]:
+def calcular_riesgo_pab(pab: float, sexo: str) -> str:
+    """
+    Calcula el riesgo según el perímetro abdominal y sexo
+    
+    Criterios:
+    - RSM (Riesgo Mínimo): M <94cm, F <80cm
+    - RSA (Riesgo Alto): M ≥94cm, F ≥80cm  
+    - RMA (Riesgo Muy Alto): M ≥102cm, F ≥88cm
+    """
+    if not pab or pab <= 0 or not sexo:
+        return "RSM"  # Por defecto si no hay datos
+    
+    if sexo == "M":
+        if pab < 94:
+            return "RSM"
+        elif pab < 102:
+            return "RSA"
+        else:
+            return "RMA"
+    elif sexo == "F":
+        if pab < 80:
+            return "RSM"
+        elif pab < 88:
+            return "RSA"
+        else:
+            return "RMA"
+    else:
+        return "RSM"  # Por defecto si sexo no especificado
+
+def clasificar_imc(imc: float) -> Dict[str, str]:
+    """
+    Clasifica el IMC y retorna el código y descripción correspondiente
+    
+    Clasificación:
+    - Normal: IMC < 25
+    - Sobrepeso: IMC 25-29.9 (E6690)
+    - Obesidad I: IMC 30-34.9 (E6691)
+    - Obesidad II: IMC 35-39.9 (E6692)
+    - Obesidad III: IMC ≥40 (E6693)
+    """
+    if imc < 25:
+        return None
+    elif imc < 30:
+        return {"codigo": "E6690", "descripcion": "Sobrepeso"}
+    elif imc < 35:
+        return {"codigo": "E6691", "descripcion": "Obesidad grado I"}
+    elif imc < 40:
+        return {"codigo": "E6692", "descripcion": "Obesidad grado II"}
+    else:
+        return {"codigo": "E6693", "descripcion": "Obesidad grado III"}
+
+def generar_codigos_indicador(indicador_key: str, indicador_info: Dict, edad: int, curso: str, tiene_factores: bool = False, sexo: str = "", pab: float = 0, imc: float = 0) -> List[Dict]:
     """Genera los códigos para un indicador específico"""
     codigos = []
     
@@ -148,13 +201,34 @@ def generar_codigos_indicador(indicador_key: str, indicador_info: Dict, edad: in
             if regla.get('codigo') == 'Z017' and curso == "adulto" and edad < 40:
                 continue  # No incluir laboratorio para adultos < 40 sin factores
             
-            codigo_obj = {
-                "codigo": regla['codigo'],
-                "descripcion": f"{regla['codigo']} - {regla.get('descripcion', '')}",
-                "tipo": regla.get('tipo_dx', 'D'),
-                "lab": obtener_valor_lab_default(regla, indicador_key)
-            }
+            # Manejo especial para perímetro abdominal
+            if regla.get('codigo') == '99209.03' and sexo and pab > 0:
+                valor_riesgo = calcular_riesgo_pab(pab, sexo)
+                codigo_obj = {
+                    "codigo": regla['codigo'],
+                    "descripcion": f"{regla['codigo']} - {regla.get('descripcion', '')}",
+                    "tipo": regla.get('tipo_dx', 'D'),
+                    "lab": valor_riesgo
+                }
+            else:
+                codigo_obj = {
+                    "codigo": regla['codigo'],
+                    "descripcion": f"{regla['codigo']} - {regla.get('descripcion', '')}",
+                    "tipo": regla.get('tipo_dx', 'D'),
+                    "lab": obtener_valor_lab_default(regla, indicador_key)
+                }
             codigos.append(codigo_obj)
+            
+            # Agregar código de sobrepeso/obesidad después de Z019 en valoración clínica
+            if regla.get('codigo') == 'Z019' and indicador_key in ['valoracion_clinica_con_factores', 'valoracion_clinica_sin_factores'] and imc > 0:
+                clasificacion = clasificar_imc(imc)
+                if clasificacion:
+                    codigos.append({
+                        "codigo": clasificacion['codigo'],
+                        "descripcion": f"{clasificacion['codigo']} - {clasificacion['descripcion']}",
+                        "tipo": "D",
+                        "lab": ""
+                    })
     
     # Caso especial: laboratorio para adultos
     if curso == "adulto" and (indicador_key == 'valoracion_clinica_con_factores' or indicador_key == 'valoracion_clinica_sin_factores'):
@@ -177,7 +251,8 @@ def obtener_valor_lab_default(regla: Dict, indicador_key: str) -> str:
     valores_default = {
         'Z019': 'DNT',
         '99199.22': 'N',  # Presión normal
-        '99209.02': 'N',  # Nutricional normal
+        '99209.02': '',   # Cálculo IMC sin LAB
+        '99209.03': 'RSM',  # Perímetro abdominal - RSM (Riesgo Bajo) por defecto
         '99209.04': 'RSM',  # Nutricional - RSM por defecto para jóvenes
         '99387': 'AS',    # VACAM autosuficiente
         '99215.03': 'AS', # VACAM autosuficiente
@@ -287,17 +362,17 @@ def generar_script_js(codigos: List[Dict], dni: str) -> str:
                   document.body.dispatchEvent(new KeyboardEvent('keydown', {{
                       key: 'Z', keyCode: 90, shiftKey: true, bubbles: true
                   }}));
-                  await new Promise(r => setTimeout(r, 1500));
+                  await new Promise(r => setTimeout(r, 2500)); // Aumentado de 1500 a 2500
 
                   document.activeElement.value = dx.lab;
                   ['input', 'keyup', 'change'].forEach(evt =>
                       document.activeElement.dispatchEvent(new Event(evt, {{ bubbles: true }}))
                   );
-                  await new Promise(r => setTimeout(r, 500));
+                  await new Promise(r => setTimeout(r, 1000)); // Aumentado de 500 a 1000
                   document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {{
                       key: 'Enter', keyCode: 13, bubbles: true
                   }}));
-                  await new Promise(r => setTimeout(r, 1000));
+                  await new Promise(r => setTimeout(r, 1500)); // Aumentado de 1000 a 1500
               }}
 
               console.log(`✅ ${{dx.codigo}} ingresado` + (dx.lab ? ` con LAB=${{dx.lab}}` : ''));        
@@ -387,32 +462,7 @@ def main():
             help="Ejemplo: 27/07/1990"
         )
         
-        # Campos opcionales
-        with st.expander("Datos opcionales", expanded=False):
-            nombre_completo = st.text_input("Nombre completo:", placeholder="APELLIDOS NOMBRES")
-            sexo = st.selectbox("Sexo:", ["", "M", "F"], help="Dejar vacío si no se requiere")
-        
-        # Datos antropométricos para calcular factores de riesgo
-        st.markdown("### 📏 Datos Antropométricos")
-        col_peso, col_talla = st.columns(2)
-        with col_peso:
-            peso = st.number_input("Peso (kg):", min_value=0.0, max_value=300.0, step=0.1, value=0.0)
-        with col_talla:
-            talla = st.number_input("Talla (cm):", min_value=0.0, max_value=250.0, step=0.1, value=0.0)
-        
-        # Calcular IMC si hay datos
-        imc = 0
-        tiene_sobrepeso = False
-        if peso > 0 and talla > 0:
-            talla_metros = talla / 100
-            imc = peso / (talla_metros ** 2)
-            if imc >= 25:
-                tiene_sobrepeso = True
-                st.warning(f"⚠️ IMC: {imc:.1f} - Sobrepeso/Obesidad detectado")
-            else:
-                st.success(f"✅ IMC: {imc:.1f} - Normal")
-        
-        # Validar fecha y calcular edad
+        # Validar fecha y calcular edad primero
         edad = None
         curso_vida = None
         
@@ -432,6 +482,65 @@ def main():
                         st.error("❌ Edad fuera de rango")
             except:
                 st.error("❌ Formato de fecha inválido")
+        
+        # Campos opcionales
+        nombre_completo = ""
+        sexo = ""
+        with st.expander("Datos opcionales", expanded=False):
+            nombre_completo = st.text_input("Nombre completo:", placeholder="APELLIDOS NOMBRES")
+            sexo = st.selectbox("Sexo:", ["", "M", "F"], help="Dejar vacío si no se requiere")
+        
+        # Datos antropométricos para calcular factores de riesgo
+        st.markdown("### 📏 Datos Antropométricos")
+        col_peso, col_talla = st.columns(2)
+        with col_peso:
+            peso = st.number_input("Peso (kg):", min_value=0.0, max_value=300.0, step=0.1, value=0.0)
+        with col_talla:
+            talla = st.number_input("Talla (cm):", min_value=0.0, max_value=250.0, step=0.1, value=0.0)
+        
+        # Calcular IMC si hay datos
+        imc = 0
+        tiene_sobrepeso = False
+        if peso > 0 and talla > 0:
+            talla_metros = talla / 100
+            imc = peso / (talla_metros ** 2)
+            
+            # Clasificar IMC
+            clasificacion = clasificar_imc(imc)
+            if clasificacion:
+                tiene_sobrepeso = True
+                # Mostrar con colores según gravedad
+                if clasificacion['codigo'] == 'E6690':
+                    st.warning(f"⚠️ IMC: {imc:.1f} - {clasificacion['descripcion']} ({clasificacion['codigo']})")
+                elif clasificacion['codigo'] in ['E6691', 'E6692']:
+                    st.error(f"🔴 IMC: {imc:.1f} - {clasificacion['descripcion']} ({clasificacion['codigo']})")
+                else:  # E6693
+                    st.error(f"⛔ IMC: {imc:.1f} - {clasificacion['descripcion']} ({clasificacion['codigo']})")
+            else:
+                st.success(f"✅ IMC: {imc:.1f} - Peso normal")
+        
+        # Perímetro abdominal (solo para adultos)
+        pab = 0.0  # Inicializar siempre
+        if curso_vida == "adulto":
+            pab = st.number_input(
+                "Perímetro Abdominal (cm):", 
+                min_value=0.0, 
+                max_value=200.0, 
+                step=0.1, 
+                value=0.0,
+                help="Necesario para calcular el riesgo sanitario (RSM/RSA/RMA)"
+            )
+            
+            # Mostrar el riesgo calculado si hay datos
+            if pab > 0 and sexo:
+                riesgo_calculado = calcular_riesgo_pab(pab, sexo)
+                riesgo_texto = {
+                    "RSM": "Riesgo Sanitario Mínimo (Bajo)",
+                    "RSA": "Riesgo Sanitario Alto", 
+                    "RMA": "Riesgo Muy Alto"
+                }
+                color = {"RSM": "🟢", "RSA": "🟡", "RMA": "🔴"}
+                st.info(f"{color[riesgo_calculado]} Riesgo calculado: **{riesgo_texto[riesgo_calculado]}** (LAB = {riesgo_calculado})")
     
     with col2:
         if curso_vida and dni:
@@ -468,12 +577,12 @@ def main():
                                 indicador_usar = indicador_usar.replace("sin_factores", "con_factores")
                             
                             ind_info = indicadores.get(indicador_usar, {})
-                            codigos = generar_codigos_indicador(indicador_usar, ind_info, edad, curso_vida, tiene_sobrepeso)
+                            codigos = generar_codigos_indicador(indicador_usar, ind_info, edad, curso_vida, tiene_sobrepeso, sexo, pab, imc)
                             todos_codigos.extend(codigos)
                     
                     # IMPORTANTE: Agregar agudeza visual para TODOS los cursos de vida
                     # (puede que no esté en algunos paquetes pero es necesario)
-                    agudeza_codigos = generar_codigos_indicador('agudeza_visual', {}, edad, curso_vida)
+                    agudeza_codigos = generar_codigos_indicador('agudeza_visual', {}, edad, curso_vida, False, sexo, pab, imc)
                     # Verificar si ya existe para no duplicar
                     codigos_existentes = {c['codigo'] for c in todos_codigos}
                     for codigo in agudeza_codigos:
@@ -482,15 +591,15 @@ def main():
                             break  # Solo agregar una vez
                     
                     # Agregar diagnóstico de sobrepeso/obesidad si aplica
-                    if tiene_sobrepeso:
-                        codigo_obesidad = "E669" if imc >= 30 else "E66"
-                        desc_obesidad = "Obesidad" if imc >= 30 else "Sobrepeso"
-                        todos_codigos.append({
-                            "codigo": codigo_obesidad,
-                            "descripcion": f"{codigo_obesidad} - {desc_obesidad}",
-                            "tipo": "D",
-                            "lab": ""
-                        })
+                    if tiene_sobrepeso and imc > 0:
+                        clasificacion = clasificar_imc(imc)
+                        if clasificacion:
+                            todos_codigos.append({
+                                "codigo": clasificacion['codigo'],
+                                "descripcion": f"{clasificacion['codigo']} - {clasificacion['descripcion']}",
+                                "tipo": "D",
+                                "lab": ""
+                            })
                     
                     # Plan de atención
                     if incluir_plan:
@@ -522,6 +631,12 @@ def main():
                                 nombre_mostrar += " (auto si IMC < 25)"
                             else:
                                 nombre_mostrar += " (auto si IMC ≥ 25)"
+                            
+                            # Si hay sobrepeso/obesidad, indicar que se incluirá el código
+                            if imc >= 25:
+                                clasificacion = clasificar_imc(imc)
+                                if clasificacion:
+                                    nombre_mostrar += f", incluirá {clasificacion['codigo']}"
                         else:
                             nombre_mostrar = info['nombre']
                         
@@ -546,7 +661,7 @@ def main():
                         # Procesar indicadores seleccionados
                         for ind_key in indicadores_seleccionados:
                             ind_info = indicadores.get(ind_key, {})
-                            codigos = generar_codigos_indicador(ind_key, ind_info, edad, curso_vida)
+                            codigos = generar_codigos_indicador(ind_key, ind_info, edad, curso_vida, tiene_sobrepeso, sexo, pab, imc)
                             todos_codigos.extend(codigos)
                         
                         # Planes

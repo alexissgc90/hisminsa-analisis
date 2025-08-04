@@ -80,14 +80,15 @@ INDICADORES_ADULTO = {
                 "codigo": "99209.02",
                 "descripcion": "Cálculo de IMC",
                 "tipo_dx": "D",
+                "lab_valores": [""],
                 "obligatorio": True
             },
             {
                 "codigo": "99209.03",
                 "descripcion": "Evaluación del perímetro abdominal",
                 "tipo_dx": "D",
-                "lab_valores": ["", "RSM", "RSA", "RMA"],
-                "lab_descripcion": "RSM=Riesgo Bajo, RSA=Riesgo Alto, RMA=Riesgo Muy Alto",
+                "lab_valores": ["RSM", "RSA", "RMA", ""],
+                "lab_descripcion": "RSM=Riesgo Bajo, RSA=Riesgo Alto, RMA=Riesgo Muy Alto, en blanco también es válido",
                 "obligatorio": True
             }
         ],
