@@ -946,6 +946,426 @@ def seccion_carga_archivos():
     
     return archivos_consolidados, archivo_pacientes, archivo_personal, archivo_registradores
 
+# ==============================================================================
+# FUNCIONES DE SUPERVISIÓN INDIVIDUAL
+# ==============================================================================
+
+def supervisar_paciente_individual(df, dni, curso_vida):
+    """
+    Realiza una supervisión completa de un paciente individual
+    Retorna un diccionario con toda la información de cumplimiento
+    """
+    df_paciente = df[df['pac_Numero_Documento'] == dni]
+    
+    if df_paciente.empty:
+        return None
+    
+    # Información básica del paciente
+    info_basica = {
+        'dni': dni,
+        'nombre': df_paciente['Paciente_Completo'].iloc[0] if 'Paciente_Completo' in df_paciente.columns else 'Sin nombre',
+        'edad': df_paciente['edad_anos'].iloc[0],
+        'sexo': df_paciente['pac_Genero'].iloc[0] if 'pac_Genero' in df_paciente.columns else 'No especificado',
+        'fecha_nacimiento': df_paciente['Fecha_Nacimiento_Formato'].iloc[0] if 'Fecha_Nacimiento_Formato' in df_paciente.columns else '',
+        'establecimiento': df_paciente['Establecimiento_Nombre'].iloc[0] if 'Establecimiento_Nombre' in df_paciente.columns else '',
+        'total_atenciones': len(df_paciente),
+        'fechas_atencion': sorted(df_paciente['Fecha_Atencion'].unique()) if 'Fecha_Atencion' in df_paciente.columns else []
+    }
+    
+    # Obtener funciones según curso de vida
+    if curso_vida == "Adulto (30-59 años)":
+        indicadores = INDICADORES_ADULTO
+        paquete_info = PAQUETE_INTEGRAL_ADULTO
+        verificar_paquete = verificar_paquete_adulto
+        verificar_indicador = verificar_indicador_adulto
+    elif curso_vida == "Joven (18-29 años)":
+        indicadores = INDICADORES_JOVEN
+        paquete_info = PAQUETE_INTEGRAL_JOVEN
+        verificar_paquete = verificar_paquete_joven
+        verificar_indicador = verificar_indicador_joven
+    else:  # Adulto Mayor
+        indicadores = INDICADORES_ADULTO_MAYOR
+        paquete_info = PAQUETE_INTEGRAL_ADULTO_MAYOR
+        verificar_paquete = verificar_paquete_adulto_mayor
+        verificar_indicador = verificar_indicador_adulto_mayor
+    
+    # Verificar paquete integral
+    resultado_paquete = verificar_paquete(df_paciente, dni)
+    
+    # Verificar cada indicador individual
+    resultados_indicadores = {}
+    for key, info in indicadores.items():
+        if key not in ['plan_atencion_elaborado', 'plan_atencion_ejecutado']:
+            resultado = validar_indicador_detallado(df_paciente, key, info, curso_vida)
+            resultados_indicadores[key] = resultado
+    
+    # Calcular métricas generales
+    total_indicadores = len(resultados_indicadores)
+    indicadores_completos = sum(1 for r in resultados_indicadores.values() if r['cumple'])
+    indicadores_parciales = sum(1 for r in resultados_indicadores.values() if r['parcial'])
+    indicadores_faltantes = total_indicadores - indicadores_completos - indicadores_parciales
+    
+    # Detectar errores de LAB
+    errores_lab = detectar_errores_lab(df_paciente, indicadores)
+    
+    # Generar recomendaciones
+    recomendaciones = generar_recomendaciones_correccion(
+        df_paciente, resultado_paquete, resultados_indicadores, errores_lab, curso_vida
+    )
+    
+    return {
+        'info_basica': info_basica,
+        'paquete_integral': resultado_paquete,
+        'indicadores': resultados_indicadores,
+        'metricas': {
+            'total_indicadores': total_indicadores,
+            'completos': indicadores_completos,
+            'parciales': indicadores_parciales,
+            'faltantes': indicadores_faltantes,
+            'porcentaje_cumplimiento': round((indicadores_completos / total_indicadores * 100) if total_indicadores > 0 else 0, 1)
+        },
+        'errores_lab': errores_lab,
+        'recomendaciones': recomendaciones
+    }
+
+def validar_indicador_detallado(df_paciente, indicador_key, indicador_info, curso_vida):
+    """
+    Valida un indicador específico y retorna información detallada
+    """
+    resultado = {
+        'nombre': indicador_info['nombre'],
+        'cumple': False,
+        'parcial': False,
+        'codigos_presentes': [],
+        'codigos_faltantes': [],
+        'errores_lab': [],
+        'observaciones': []
+    }
+    
+    # Obtener códigos presentes del paciente
+    codigos_paciente = set(df_paciente['Codigo_Item'].unique())
+    
+    # Verificar según tipo de indicador
+    if 'reglas' in indicador_info:
+        if isinstance(indicador_info['reglas'], list):
+            # Indicador con múltiples reglas
+            for regla in indicador_info['reglas']:
+                codigo = regla['codigo']
+                df_codigo = df_paciente[df_paciente['Codigo_Item'] == codigo]
+                
+                if not df_codigo.empty:
+                    # Código presente, verificar LAB
+                    resultado['codigos_presentes'].append({
+                        'codigo': codigo,
+                        'descripcion': regla.get('descripcion', ''),
+                        'tipo_dx': df_codigo['Tipo_Diagnostico'].iloc[0],
+                        'lab': df_codigo['Valor_Lab'].iloc[0] if 'Valor_Lab' in df_codigo.columns else ''
+                    })
+                    
+                    # Validar LAB si aplica
+                    if 'lab_valores' in regla and regla['lab_valores']:
+                        lab_actual = df_codigo['Valor_Lab'].iloc[0] if 'Valor_Lab' in df_codigo.columns else ''
+                        # Manejar NaN como string vacío
+                        if pd.isna(lab_actual):
+                            lab_actual = ''
+                        lab_actual = str(lab_actual)
+                        
+                        # Verificar si el valor actual está en los esperados
+                        if lab_actual not in regla['lab_valores']:
+                            resultado['errores_lab'].append({
+                                'codigo': codigo,
+                                'lab_actual': lab_actual if lab_actual else '(vacío)',
+                                'lab_esperados': regla['lab_valores']
+                            })
+                else:
+                    # Código faltante
+                    resultado['codigos_faltantes'].append({
+                        'codigo': codigo,
+                        'descripcion': regla.get('descripcion', ''),
+                        'tipo_dx': regla.get('tipo_dx', 'D'),
+                        'lab_requerido': regla.get('lab_valores', [])
+                    })
+        else:
+            # Indicador con estructura compleja (ej: tamizaje VIH)
+            resultado['observaciones'].append("Indicador con validación especial")
+    
+    # Determinar estado general
+    if len(resultado['codigos_faltantes']) == 0 and len(resultado['errores_lab']) == 0:
+        resultado['cumple'] = True
+    elif len(resultado['codigos_presentes']) > 0:
+        resultado['parcial'] = True
+    
+    return resultado
+
+def detectar_errores_lab(df_paciente, indicadores):
+    """
+    Detecta errores en valores LAB según las reglas de los indicadores
+    """
+    errores = []
+    
+    for key, info in indicadores.items():
+        if 'reglas' in info and isinstance(info['reglas'], list):
+            for regla in info['reglas']:
+                if 'lab_valores' in regla and regla['lab_valores']:
+                    codigo = regla['codigo']
+                    df_codigo = df_paciente[df_paciente['Codigo_Item'] == codigo]
+                    
+                    if not df_codigo.empty:
+                        lab_actual = df_codigo['Valor_Lab'].iloc[0] if 'Valor_Lab' in df_codigo.columns else ''
+                        # Manejar NaN como string vacío
+                        if pd.isna(lab_actual):
+                            lab_actual = ''
+                        lab_actual = str(lab_actual)
+                        
+                        # Si el valor vacío no está permitido y el actual está vacío o no está en los esperados
+                        if lab_actual not in regla['lab_valores']:
+                            errores.append({
+                                'indicador': info['nombre'],
+                                'indicador_key': key,  # Agregar la clave del indicador
+                                'codigo': codigo,
+                                'descripcion': regla.get('descripcion', ''),
+                                'lab_actual': lab_actual if lab_actual else '(vacío)',
+                                'lab_esperados': regla['lab_valores'],
+                                'lab_descripcion': regla.get('lab_descripcion', '')
+                            })
+    
+    return errores
+
+def generar_recomendaciones_correccion(df_paciente, resultado_paquete, resultados_indicadores, errores_lab, curso_vida):
+    """
+    Genera recomendaciones específicas de corrección con priorización del paquete integral
+    """
+    recomendaciones = []
+    
+    # Definir componentes prioritarios del paquete integral por curso de vida
+    componentes_prioritarios = {
+        "Adulto (30-59 años)": {
+            'Valoración Clínica y Tamizaje Laboratorial': 'valoracion_clinica',
+            'Tamizaje Agudeza Visual': 'agudeza_visual',
+            'Tamizaje Trastornos Depresivos': 'depresion',
+            'Tamizaje Violencia': 'violencia',
+            'Tamizaje VIH': 'vih',
+            'Evaluación Oral Completa': 'eval_oral',
+            'Tamizaje Alcohol y Drogas': 'alcohol_drogas'
+        },
+        "Joven (18-29 años)": {
+            'Valoración Clínica y Factores de Riesgo': 'valoracion_clinica',
+            'Tamizaje Violencia Intrafamiliar': 'violencia',
+            'Salud Sexual y Reproductiva': 'salud_sexual',
+            'Tamizaje VIH/ITS': 'vih',
+            'Evaluación Oral': 'eval_oral',
+            'Salud Mental': 'salud_mental'
+        },
+        "Adulto Mayor (60+ años)": {
+            'Valoración Clínica Integral': 'valoracion_clinica',
+            'Evaluación Funcional': 'evaluacion_funcional',
+            'Tamizaje Depresión Geriátrica': 'depresion',
+            'Tamizaje Deterioro Cognitivo': 'deterioro_cognitivo',
+            'Valoración Nutricional': 'valoracion_nutricional',
+            'Prevención de Caídas': 'prevencion_caidas'
+        }
+    }
+    
+    componentes_curso = componentes_prioritarios.get(curso_vida, {})
+    
+    # PRIMERO: Componentes del paquete integral completamente faltantes
+    for componente, cumple in resultado_paquete['componentes'].items():
+        if not cumple and componente in componentes_curso:
+            indicador_key = componentes_curso[componente]
+            if indicador_key in resultados_indicadores:
+                resultado_ind = resultados_indicadores[indicador_key]
+                # Si no tiene ningún código registrado
+                if not resultado_ind.get('codigos_presentes', []):
+                    for codigo_faltante in resultado_ind['codigos_faltantes']:
+                        recomendaciones.append({
+                            'tipo': 'paquete_integral_faltante',
+                            'prioridad': 'muy_alta',
+                            'componente': componente,
+                            'indicador': resultado_ind['nombre'],
+                            'codigo': codigo_faltante['codigo'],
+                            'descripcion': codigo_faltante['descripcion'],
+                            'mensaje': f"🚨 PAQUETE INTEGRAL - {componente}: Agregar {codigo_faltante['codigo']} - {codigo_faltante['descripcion']}",
+                            'es_paquete_integral': True
+                        })
+    
+    # SEGUNDO: Componentes del paquete integral parcialmente completos
+    for componente, cumple in resultado_paquete['componentes'].items():
+        if not cumple and componente in componentes_curso:
+            indicador_key = componentes_curso[componente]
+            if indicador_key in resultados_indicadores:
+                resultado_ind = resultados_indicadores[indicador_key]
+                # Si tiene algunos códigos pero faltan otros
+                if resultado_ind['parcial'] and resultado_ind.get('codigos_presentes', []):
+                    for codigo_faltante in resultado_ind['codigos_faltantes']:
+                        recomendaciones.append({
+                            'tipo': 'paquete_integral_parcial',
+                            'prioridad': 'alta',
+                            'componente': componente,
+                            'indicador': resultado_ind['nombre'],
+                            'codigo': codigo_faltante['codigo'],
+                            'descripcion': codigo_faltante['descripcion'],
+                            'mensaje': f"⚠️ PAQUETE INTEGRAL (Parcial) - {componente}: Completar {codigo_faltante['codigo']}",
+                            'es_paquete_integral': True
+                        })
+    
+    # TERCERO: Errores de LAB en componentes del paquete
+    for error in errores_lab:
+        es_paquete = False
+        for componente, indicador_key in componentes_curso.items():
+            if error.get('indicador_key') == indicador_key:
+                es_paquete = True
+                recomendaciones.append({
+                    'tipo': 'error_lab_paquete',
+                    'prioridad': 'alta',
+                    'componente': componente,
+                    'indicador': error['indicador'],
+                    'codigo': error['codigo'],
+                    'lab_actual': error['lab_actual'],
+                    'lab_esperados': error['lab_esperados'],
+                    'mensaje': f"🔧 PAQUETE INTEGRAL - Corregir LAB de {error['codigo']}: actual '{error['lab_actual']}', esperado: {', '.join(error['lab_esperados'])}",
+                    'es_paquete_integral': True
+                })
+                break
+    
+    # CUARTO: Otros indicadores NO prioritarios
+    indicadores_paquete = list(componentes_curso.values())
+    for key, resultado in resultados_indicadores.items():
+        if key not in indicadores_paquete and resultado['parcial']:
+            for codigo_faltante in resultado['codigos_faltantes']:
+                recomendaciones.append({
+                    'tipo': 'codigo_faltante',
+                    'prioridad': 'media',
+                    'indicador': resultado['nombre'],
+                    'codigo': codigo_faltante['codigo'],
+                    'descripcion': codigo_faltante['descripcion'],
+                    'mensaje': f"Agregar código {codigo_faltante['codigo']} para completar {resultado['nombre']}",
+                    'es_paquete_integral': False
+                })
+    
+    # QUINTO: Errores de LAB NO prioritarios
+    for error in errores_lab:
+        es_paquete = any(error.get('indicador_key') == ind_key for ind_key in indicadores_paquete)
+        if not es_paquete:
+            recomendaciones.append({
+                'tipo': 'error_lab',
+                'prioridad': 'media',
+                'indicador': error['indicador'],
+                'codigo': error['codigo'],
+                'lab_actual': error['lab_actual'],
+                'lab_esperados': error['lab_esperados'],
+                'mensaje': f"Corregir LAB de {error['codigo']}: actual '{error['lab_actual']}', esperado: {', '.join(error['lab_esperados'])}",
+                'es_paquete_integral': False
+            })
+    
+    # Ordenar por prioridad
+    prioridad_orden = {'muy_alta': 0, 'alta': 1, 'media': 2, 'baja': 3}
+    recomendaciones.sort(key=lambda x: prioridad_orden.get(x['prioridad'], 4))
+    
+    return recomendaciones
+
+def generar_json_correccion_individual(df_paciente, recomendaciones, curso_vida):
+    """
+    Genera un JSON de corrección para un paciente individual
+    """
+    dni = df_paciente['pac_Numero_Documento'].iloc[0]
+    edad = df_paciente['edad_anos'].iloc[0]
+    nombre = df_paciente['Paciente_Completo'].iloc[0] if 'Paciente_Completo' in df_paciente.columns else ''
+    sexo = df_paciente['pac_Genero'].iloc[0] if 'pac_Genero' in df_paciente.columns else ''
+    
+    diagnosticos = []
+    
+    # Agregar códigos faltantes (todos los tipos)
+    for rec in recomendaciones:
+        if rec['tipo'] in ['codigo_faltante', 'paquete_integral_faltante', 'paquete_integral_parcial']:
+            diag = {
+                "codigo": rec['codigo'],
+                "descripcion": f"{rec['codigo']} - {rec['descripcion']}",
+                "tipo": "D",
+                "tipo_original": "D",
+                "modificado": False
+            }
+            
+            # Agregar LAB si es necesario
+            if rec.get('lab_requerido') and len(rec['lab_requerido']) > 0:
+                # Usar el primer valor no vacío
+                lab_val = next((v for v in rec['lab_requerido'] if v != ""), None)
+                if lab_val:
+                    diag['lab'] = lab_val
+            
+            diagnosticos.append(diag)
+    
+    # Generar estructura JSON
+    json_data = {
+        "fecha_exportacion": datetime.now().isoformat() + 'Z',
+        "dia_his": str(datetime.now().day),
+        "fecha_atencion": datetime.now().strftime("%Y-%m-%d"),
+        "total_pacientes": 1,
+        "cambios_realizados": 0,
+        "tipo_correccion": "supervision_individual",
+        "pacientes": [{
+            "dni": dni,
+            "nombre": nombre,
+            "edad": str(edad),
+            "sexo": sexo,
+            "diagnosticos": diagnosticos
+        }]
+    }
+    
+    return json_data
+
+def generar_json_paquete_integral(df_paciente, recomendaciones, curso_vida):
+    """
+    Genera un JSON solo con los códigos del paquete integral prioritario
+    """
+    dni = df_paciente['pac_Numero_Documento'].iloc[0]
+    edad = df_paciente['edad_anos'].iloc[0]
+    nombre = df_paciente['Paciente_Completo'].iloc[0] if 'Paciente_Completo' in df_paciente.columns else ''
+    sexo = df_paciente['pac_Genero'].iloc[0] if 'pac_Genero' in df_paciente.columns else ''
+    
+    diagnosticos = []
+    
+    # Solo códigos del paquete integral
+    for rec in recomendaciones:
+        if rec.get('es_paquete_integral', False) and rec['tipo'] in ['paquete_integral_faltante', 'paquete_integral_parcial']:
+            diag = {
+                "codigo": rec['codigo'],
+                "descripcion": f"{rec['codigo']} - {rec['descripcion']}",
+                "tipo": "D",
+                "tipo_original": "D",
+                "modificado": False,
+                "componente": rec.get('componente', '')
+            }
+            
+            # Agregar LAB si es necesario
+            if rec.get('lab_requerido') and len(rec['lab_requerido']) > 0:
+                diag["lab"] = rec['lab_requerido'][0]
+            
+            diagnosticos.append(diag)
+    
+    json_data = {
+        "tipo_archivo": "correccion_paquete_integral",
+        "version": "2.0",
+        "fecha_generacion": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "establecimiento": "HOSPITAL/CENTRO",
+        "mes": datetime.now().strftime("%Y-%m"),
+        "dia_his": str(datetime.now().day),
+        "fecha_atencion": datetime.now().strftime("%Y-%m-%d"),
+        "total_pacientes": 1,
+        "cambios_realizados": 0,
+        "tipo_correccion": "paquete_integral_prioritario",
+        "curso_vida": curso_vida,
+        "pacientes": [{
+            "dni": dni,
+            "nombre": nombre,
+            "edad": str(edad),
+            "sexo": sexo,
+            "total_codigos_paquete": len(diagnosticos),
+            "diagnosticos": diagnosticos
+        }]
+    }
+    
+    return json_data
+
 def main():
     """Función principal de la aplicación"""
     # Título y descripción
@@ -1031,7 +1451,7 @@ def main():
         mostrar_metricas(df_filtrado)
         
         # Crear tabs de análisis
-        tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Tabla", "📈 Gráficos", "📅 Temporal", "📋 Resumen", "🎯 Indicadores"])
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 Tabla", "📈 Gráficos", "📅 Temporal", "📋 Resumen", "🎯 Indicadores", "🔍 Supervisión Individual"])
         
         with tab1:
             st.subheader("📊 Tabla de Atenciones")
@@ -1448,6 +1868,7 @@ def main():
                     # Crear DataFrame con información resumida
                     agg_dict = {
                         'Paciente_Completo': 'first',
+                        'Fecha_Nacimiento_Formato': 'first',
                         'edad_anos': 'first',
                         'pac_Genero': 'first',
                         'Fecha_Atencion': 'count'
@@ -1466,6 +1887,7 @@ def main():
                     columnas_rename = {
                         'pac_Numero_Documento': 'DNI',
                         'Paciente_Completo': 'Nombre Completo',
+                        'Fecha_Nacimiento_Formato': 'Fecha Nacimiento',
                         'edad_anos': 'Edad',
                         'pac_Genero': 'Género'
                     }
@@ -1509,9 +1931,11 @@ def main():
                         column_config={
                             "DNI": st.column_config.TextColumn("DNI", width="small"),
                             "Nombre Completo": st.column_config.TextColumn("Nombre", width="medium"),
+                            "Fecha Nacimiento": st.column_config.TextColumn("F. Nacimiento", width="small"),
                             "Edad": st.column_config.NumberColumn("Edad", width="small"),
                             "Género": st.column_config.TextColumn("Género", width="small"),
-                            "N° Registros": st.column_config.NumberColumn("Registros", width="small")
+                            "N° Registros": st.column_config.NumberColumn("Registros", width="small"),
+                            "Última Fecha": st.column_config.TextColumn("Últ. Atención", width="small")
                         }
                     )
                     
@@ -1590,7 +2014,6 @@ def main():
                         'Id_Establecimiento': 'Código Estab.',
                         'Establecimiento_Nombre': 'Nombre Estab.',
                         'Personal_Completo': 'Último Personal',
-                        'Fecha_Atencion': 'Última Atención',
                         'UPS_Descripcion': 'Último Servicio',
                         'mes_Descripcion': 'Mes Atención',
                         'Id_Turno': 'Turno'
@@ -1635,16 +2058,15 @@ def main():
                             registro = {
                                 'DNI': dni,
                                 'Nombre': info_paciente['Paciente_Completo'],
+                                'Fecha Nacimiento': info_paciente.get('Fecha_Nacimiento_Formato', 'N/A'),
                                 'Edad': info_paciente['edad_anos'],
-                                'Género': info_paciente['pac_Genero']
+                                'Género': info_paciente['pac_Genero'],
+                                'Última Atención': df_curso[df_curso['pac_Numero_Documento'] == dni]['Fecha_Formato'].max()
                             }
                             
                             # Agregar columnas seleccionadas
                             for col in columnas_seleccionadas_paquete:
-                                if col == 'Fecha_Atencion':
-                                    # Obtener la última fecha de atención
-                                    registro[columnas_disponibles_paquete[col]] = df_curso[df_curso['pac_Numero_Documento'] == dni]['Fecha_Formato'].max()
-                                elif col in info_paciente.index:
+                                if col in info_paciente.index:
                                     registro[columnas_disponibles_paquete[col]] = info_paciente[col]
                                 else:
                                     # Para otras columnas, obtener el último valor
@@ -1706,7 +2128,7 @@ def main():
                     df_paquetes['Componentes_Faltantes'] = num_componentes_total - df_paquetes['N° Componentes']
                     
                     # Reorganizar columnas para que las de estado estén al final
-                    columnas_base = ['DNI', 'Nombre', 'Edad', 'Género']
+                    columnas_base = ['DNI', 'Nombre', 'Fecha Nacimiento', 'Edad', 'Género', 'Última Atención']
                     columnas_adicionales = [col for col in columnas_disponibles_paquete.values() if col in df_paquetes.columns]
                     
                     # Columnas de componentes según curso de vida
@@ -2229,6 +2651,726 @@ def main():
                 
                 else:
                     st.warning(f"No se encontraron registros de {grupo_etario.lower()} ({edad_min}-{edad_max} años) en el período seleccionado.")
+        
+        # Tab 6: Supervisión Individual
+        with tab6:
+            st.subheader("🔍 Supervisión Individual por Paciente")
+            st.markdown("### Sistema Inteligente de Supervisión y Corrección de Indicadores")
+            
+            # CSS personalizado para mejor visualización
+            st.markdown("""
+            <style>
+                .indicador-card {
+                    background-color: #f8f9fa;
+                    border-radius: 10px;
+                    padding: 15px;
+                    margin: 10px 0;
+                    border-left: 5px solid;
+                }
+                .indicador-completo { border-left-color: #28a745; }
+                .indicador-parcial { border-left-color: #ffc107; }
+                .indicador-faltante { border-left-color: #dc3545; }
+                .codigo-tag {
+                    display: inline-block;
+                    padding: 5px 10px;
+                    margin: 2px;
+                    border-radius: 15px;
+                    font-size: 0.9em;
+                    font-weight: 500;
+                }
+                .lab-value {
+                    background-color: #007bff;
+                    color: white;
+                    padding: 2px 8px;
+                    border-radius: 10px;
+                    font-size: 0.85em;
+                }
+                .prioridad-alta {
+                    background-color: #ffebee;
+                    border: 1px solid #ef5350;
+                    padding: 10px;
+                    border-radius: 5px;
+                    margin: 5px 0;
+                }
+            </style>
+            """, unsafe_allow_html=True)
+            
+            # Selector de curso de vida para supervisión
+            col_curso, col_dni = st.columns([1, 2])
+            
+            with col_curso:
+                curso_vida_supervision = st.selectbox(
+                    "Curso de Vida:",
+                    ["Adulto (30-59 años)", "Joven (18-29 años)", "Adulto Mayor (60+ años)"],
+                    key="curso_vida_supervision"
+                )
+            
+            with col_dni:
+                # Campo de búsqueda por DNI
+                dni_buscar = st.text_input(
+                    "🔍 Buscar por DNI:",
+                    placeholder="Ingrese el DNI del paciente",
+                    max_chars=8,
+                    key="dni_busqueda"
+                )
+            
+            # Botón de búsqueda
+            if st.button("🔎 Buscar Paciente", type="primary", key="btn_buscar_paciente"):
+                if dni_buscar and len(dni_buscar) == 8:
+                    # Realizar supervisión
+                    with st.spinner("Analizando datos del paciente..."):
+                        resultado_supervision = supervisar_paciente_individual(
+                            df_filtrado, dni_buscar, curso_vida_supervision
+                        )
+                    
+                    if resultado_supervision:
+                        # Mostrar resultados
+                        st.markdown("---")
+                        
+                        # Información básica del paciente
+                        st.markdown("### 👤 Información del Paciente")
+                        col_info1, col_info2, col_info3 = st.columns(3)
+                        
+                        with col_info1:
+                            st.markdown(f"**Nombre:** {resultado_supervision['info_basica']['nombre']}")
+                            st.markdown(f"**DNI:** {resultado_supervision['info_basica']['dni']}")
+                            st.markdown(f"**Fecha Nacimiento:** {resultado_supervision['info_basica']['fecha_nacimiento']}")
+                        with col_info2:
+                            st.markdown(f"**Edad:** {resultado_supervision['info_basica']['edad']} años")
+                            st.markdown(f"**Sexo:** {resultado_supervision['info_basica']['sexo']}")
+                            st.markdown(f"**Total Atenciones:** {resultado_supervision['info_basica']['total_atenciones']}")
+                        with col_info3:
+                            st.markdown(f"**Establecimiento:** {resultado_supervision['info_basica']['establecimiento']}")
+                            if resultado_supervision['info_basica']['fechas_atencion']:
+                                st.markdown(f"**Primera Atención:** {min(resultado_supervision['info_basica']['fechas_atencion'])}")
+                                st.markdown(f"**Última Atención:** {max(resultado_supervision['info_basica']['fechas_atencion'])}")
+                        
+                        # Dashboard de cumplimiento mejorado
+                        st.markdown("### 📊 Dashboard de Cumplimiento")
+                        
+                        # Resumen visual del paquete integral
+                        paquete_completo = resultado_supervision['paquete_integral']['completo']
+                        porcentaje = resultado_supervision['metricas']['porcentaje_cumplimiento']
+                        
+                        # Barra de progreso visual
+                        if porcentaje >= 80:
+                            progress_color = "green"
+                        elif porcentaje >= 60:
+                            progress_color = "orange"
+                        else:
+                            progress_color = "red"
+                        
+                        st.markdown(f"""
+                        <div style="background-color: #f0f2f6; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+                            <h4 style="margin-bottom: 10px;">📦 PAQUETE INTEGRAL - {curso_vida_supervision}</h4>
+                            <div style="background-color: #e0e0e0; border-radius: 10px; height: 30px; position: relative;">
+                                <div style="background-color: {progress_color}; width: {porcentaje}%; height: 100%; border-radius: 10px; 
+                                           display: flex; align-items: center; justify-content: center; color: white; font-weight: bold;">
+                                    {porcentaje}%
+                                </div>
+                            </div>
+                            <p style="margin-top: 10px; font-size: 0.9em;">
+                                Estado: <strong>{'✅ COMPLETO' if paquete_completo else '❌ INCOMPLETO'}</strong> | 
+                                Indicadores: {resultado_supervision['metricas']['completos']}/{resultado_supervision['metricas']['total_indicadores']}
+                            </p>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        
+                        # Métricas en cards
+                        col_dash1, col_dash2, col_dash3, col_dash4 = st.columns(4)
+                        
+                        with col_dash1:
+                            st.markdown(f"""
+                            <div style="background-color: {'#d4edda' if paquete_completo else '#f8d7da'}; 
+                                        padding: 15px; border-radius: 10px; text-align: center;">
+                                <h3 style="margin: 0;">{'🟢' if paquete_completo else '🔴'}</h3>
+                                <p style="margin: 5px 0; font-weight: bold;">Paquete Integral</p>
+                                <p style="margin: 0; font-size: 0.9em;">{'Completo' if paquete_completo else 'Incompleto'}</p>
+                            </div>
+                            """, unsafe_allow_html=True)
+                        
+                        with col_dash2:
+                            st.metric(
+                                "✅ Completos",
+                                resultado_supervision['metricas']['completos'],
+                                f"{round(resultado_supervision['metricas']['completos']/resultado_supervision['metricas']['total_indicadores']*100, 1)}%"
+                            )
+                        
+                        with col_dash3:
+                            st.metric(
+                                "⚠️ Parciales",
+                                resultado_supervision['metricas']['parciales'],
+                                "Requieren completar"
+                            )
+                        
+                        with col_dash4:
+                            errores_lab = len(resultado_supervision['errores_lab'])
+                            st.metric(
+                                "🔴 Errores LAB",
+                                errores_lab,
+                                "Necesitan corrección" if errores_lab > 0 else "Sin errores"
+                            )
+                        
+                        # Primero mostrar componentes del paquete integral
+                        st.markdown("### 🎯 Componentes del Paquete Integral")
+                        
+                        # Obtener estado de componentes del paquete
+                        componentes_paquete = resultado_supervision['paquete_integral']['componentes']
+                        
+                        # Verificar si falta valoración clínica (componente crítico)
+                        valoracion_clinica_falta = False
+                        for componente, cumple in componentes_paquete.items():
+                            if 'Valoración Clínica' in componente and not cumple:
+                                valoracion_clinica_falta = True
+                                break
+                        
+                        # Mostrar alerta especial si falta valoración clínica
+                        if valoracion_clinica_falta:
+                            st.error("""
+                            ⚠️ **ATENCIÓN PRIORITARIA: Falta Valoración Clínica**
+                            
+                            La Valoración Clínica es un componente OBLIGATORIO del paquete integral y debe completarse primero.
+                            """)
+                        
+                        # Crear grid visual de componentes
+                        cols_componentes = st.columns(3)
+                        for idx, (componente, cumple) in enumerate(componentes_paquete.items()):
+                            col = cols_componentes[idx % 3]
+                            with col:
+                                if cumple:
+                                    st.success(f"✅ **{componente}**")
+                                else:
+                                    if 'Valoración Clínica' in componente:
+                                        st.error(f"❌ **{componente}** 🚨")
+                                    else:
+                                        st.error(f"❌ **{componente}**")
+                        
+                        # Separador
+                        st.markdown("---")
+                        
+                        # Detalles por indicador mejorados
+                        st.markdown("### 📋 Detalle de Indicadores por Estado")
+                        
+                        # Crear tabs para organizar indicadores
+                        tab_faltantes, tab_parciales, tab_completos, tab_resumen = st.tabs([
+                            "🔴 Prioritarios/Faltantes", "⚠️ Parciales", "✅ Completos", "📊 Resumen Visual"
+                        ])
+                        
+                        with tab_completos:
+                            indicadores_completos = {k: v for k, v in resultado_supervision['indicadores'].items() if v['cumple']}
+                            if indicadores_completos:
+                                for key, indicador in indicadores_completos.items():
+                                    with st.expander(f"✅ {indicador['nombre']}", expanded=False):
+                                        st.success("Indicador completo")
+                                        if indicador['codigos_presentes']:
+                                            st.markdown("**Códigos registrados:**")
+                                            for codigo in indicador['codigos_presentes']:
+                                                lab_val = codigo.get('lab', '')
+                                                if pd.isna(lab_val) or str(lab_val).lower() == 'nan':
+                                                    lab_text = " [LAB: (vacío)]"
+                                                elif lab_val:
+                                                    lab_text = f" [LAB: {lab_val}]"
+                                                else:
+                                                    lab_text = ""
+                                                st.markdown(f"- {codigo['codigo']} - {codigo['descripcion']}{lab_text}")
+                            else:
+                                st.info("No hay indicadores completos")
+                        
+                        with tab_parciales:
+                            indicadores_parciales = {k: v for k, v in resultado_supervision['indicadores'].items() if v['parcial']}
+                            if indicadores_parciales:
+                                for key, indicador in indicadores_parciales.items():
+                                    with st.expander(f"⚠️ {indicador['nombre']}", expanded=True):
+                                        st.warning("Indicador parcialmente completo")
+                                        
+                                        col_p1, col_p2 = st.columns(2)
+                                        
+                                        with col_p1:
+                                            if indicador['codigos_presentes']:
+                                                st.markdown("**✅ Códigos presentes:**")
+                                                for codigo in indicador['codigos_presentes']:
+                                                    lab_text = f" [LAB: {codigo['lab']}]" if codigo.get('lab') else ""
+                                                    st.markdown(f"- {codigo['codigo']}{lab_text}")
+                                        
+                                        with col_p2:
+                                            if indicador['codigos_faltantes']:
+                                                st.markdown("**❌ Códigos faltantes:**")
+                                                for codigo in indicador['codigos_faltantes']:
+                                                    st.markdown(f"- {codigo['codigo']} - {codigo['descripcion']}")
+                                        
+                                        if indicador['errores_lab']:
+                                            st.error("**🔴 Errores de LAB:**")
+                                            for error in indicador['errores_lab']:
+                                                st.markdown(f"- {error['codigo']}: LAB actual '{error['lab_actual']}', esperado: {error['lab_esperados']}")
+                            else:
+                                st.info("No hay indicadores parciales")
+                        
+                        with tab_faltantes:
+                            # Combinar faltantes y parciales para priorización
+                            indicadores_prioritarios = {
+                                k: v for k, v in resultado_supervision['indicadores'].items() 
+                                if not v['cumple']
+                            }
+                            
+                            if indicadores_prioritarios:
+                                st.error(f"⚠️ **{len(indicadores_prioritarios)} indicadores requieren atención**")
+                                
+                                # Separar por tipo
+                                faltantes_completos = {k: v for k, v in indicadores_prioritarios.items() if not v['parcial']}
+                                parciales = {k: v for k, v in indicadores_prioritarios.items() if v['parcial']}
+                                
+                                # Mostrar faltantes completos primero, priorizando valoración clínica
+                                if faltantes_completos:
+                                    st.markdown("#### 🔴 INDICADORES NO INICIADOS (Prioridad Alta)")
+                                    
+                                    # Ordenar para poner valoración clínica primero
+                                    faltantes_ordenados = {}
+                                    
+                                    # Buscar valoración clínica primero
+                                    for key, indicador in faltantes_completos.items():
+                                        if 'valoracion_clinica' in key or 'Valoración Clínica' in indicador['nombre']:
+                                            faltantes_ordenados[key] = indicador
+                                            break
+                                    
+                                    # Luego agregar el resto
+                                    for key, indicador in faltantes_completos.items():
+                                        if key not in faltantes_ordenados:
+                                            faltantes_ordenados[key] = indicador
+                                    
+                                    for key, indicador in faltantes_ordenados.items():
+                                        with st.container():
+                                            st.markdown(f"""
+                                            <div style="background-color: #ffebee; padding: 15px; border-radius: 10px; 
+                                                        border-left: 5px solid #dc3545; margin-bottom: 15px;">
+                                                <h4 style="color: #c62828; margin-bottom: 10px;">❌ {indicador['nombre']}</h4>
+                                            </div>
+                                            """, unsafe_allow_html=True)
+                                            
+                                            if indicador['codigos_faltantes']:
+                                                # Crear tabla de códigos faltantes
+                                                st.markdown("**📋 Códigos Diagnósticos Requeridos:**")
+                                                
+                                                # Preparar datos para la tabla
+                                                datos_tabla = []
+                                                for codigo in indicador['codigos_faltantes']:
+                                                    lab_requerido = ""
+                                                    if codigo.get('lab_requerido'):
+                                                        if isinstance(codigo['lab_requerido'], list):
+                                                            lab_requerido = ", ".join([l for l in codigo['lab_requerido'] if l])
+                                                        else:
+                                                            lab_requerido = codigo['lab_requerido']
+                                                    
+                                                    # Asegurar que tipo_dx sea string
+                                                    tipo_dx = codigo.get('tipo_dx', 'D')
+                                                    if isinstance(tipo_dx, list):
+                                                        tipo_dx = '/'.join(tipo_dx)
+                                                    
+                                                    datos_tabla.append({
+                                                        "Código": f"**{codigo['codigo']}**",
+                                                        "Descripción": codigo['descripcion'],
+                                                        "Tipo Dx": str(tipo_dx),
+                                                        "LAB Requerido": lab_requerido if lab_requerido else "Sin LAB"
+                                                    })
+                                                
+                                                # Mostrar como dataframe estilizado
+                                                df_codigos = pd.DataFrame(datos_tabla)
+                                                st.dataframe(
+                                                    df_codigos,
+                                                    use_container_width=True,
+                                                    hide_index=True,
+                                                    column_config={
+                                                        "Código": st.column_config.TextColumn(width="small"),
+                                                        "Descripción": st.column_config.TextColumn(width="large"),
+                                                        "Tipo Dx": st.column_config.TextColumn(width="small"),
+                                                        "LAB Requerido": st.column_config.TextColumn(width="medium")
+                                                    }
+                                                )
+                                            
+                                            st.markdown("---")
+                                
+                                # Mostrar parciales con detalle
+                                if parciales:
+                                    st.markdown("#### ⚠️ INDICADORES PARCIALES (Completar)")
+                                    
+                                    for key, indicador in parciales.items():
+                                        with st.container():
+                                            st.markdown(f"""
+                                            <div style="background-color: #fff3cd; padding: 15px; border-radius: 10px; 
+                                                        border-left: 5px solid #ffc107; margin-bottom: 15px;">
+                                                <h4 style="color: #856404; margin-bottom: 10px;">⚠️ {indicador['nombre']}</h4>
+                                            </div>
+                                            """, unsafe_allow_html=True)
+                                            
+                                            col1, col2 = st.columns(2)
+                                            
+                                            with col1:
+                                                st.markdown("**✅ Ya tiene:**")
+                                                for codigo in indicador['codigos_presentes']:
+                                                    lab_val = codigo.get('lab', '')
+                                                    if pd.isna(lab_val) or str(lab_val).lower() == 'nan':
+                                                        lab_text = " [LAB: (vacío)]"
+                                                    elif lab_val:
+                                                        lab_text = f" [LAB: {lab_val}]"
+                                                    else:
+                                                        lab_text = ""
+                                                    st.success(f"{codigo['codigo']} - {codigo.get('descripcion', '')}{lab_text}")
+                                            
+                                            with col2:
+                                                st.markdown("**❌ Le falta:**")
+                                                for codigo in indicador['codigos_faltantes']:
+                                                    lab_req = ""
+                                                    if codigo.get('lab_requerido') and isinstance(codigo['lab_requerido'], list):
+                                                        lab_req = f" [LAB: {', '.join(codigo['lab_requerido'])}]"
+                                                    st.error(f"{codigo['codigo']} - {codigo['descripcion']}{lab_req}")
+                                            
+                                            # Mostrar errores de LAB si existen
+                                            if indicador.get('errores_lab'):
+                                                st.markdown("**🔴 Errores de LAB a corregir:**")
+                                                for error in indicador['errores_lab']:
+                                                    st.warning(
+                                                        f"Código {error['codigo']}: LAB actual = '{error['lab_actual']}', "
+                                                        f"debe ser: {', '.join(error['lab_esperados'])}"
+                                                    )
+                                            
+                                            st.markdown("---")
+                            else:
+                                st.success("✅ Todos los indicadores están completos")
+                        
+                        # Tab de resumen visual
+                        with tab_resumen:
+                            st.markdown("#### 📊 Vista General del Estado de Indicadores")
+                            
+                            # Crear visualización tipo matriz
+                            indicadores_data = []
+                            for key, info in resultado_supervision['indicadores'].items():
+                                estado = "✅ Completo" if info['cumple'] else ("⚠️ Parcial" if info['parcial'] else "❌ Faltante")
+                                color = "#28a745" if info['cumple'] else ("#ffc107" if info['parcial'] else "#dc3545")
+                                
+                                indicadores_data.append({
+                                    "Indicador": info['nombre'],
+                                    "Estado": estado,
+                                    "Códigos Presentes": len(info['codigos_presentes']),
+                                    "Códigos Faltantes": len(info['codigos_faltantes']),
+                                    "Errores LAB": len(info.get('errores_lab', [])),
+                                    "_color": color
+                                })
+                            
+                            # Mostrar como tabla interactiva
+                            df_resumen = pd.DataFrame(indicadores_data)
+                            
+                            # Aplicar estilo condicional
+                            def color_fila(row):
+                                color = row['_color']
+                                return [f'background-color: {color}; color: white' if col != '_color' else '' for col in row.index]
+                            
+                            # Mostrar dataframe sin columna de color
+                            st.dataframe(
+                                df_resumen.drop('_color', axis=1),
+                                use_container_width=True,
+                                hide_index=True,
+                                column_config={
+                                    "Indicador": st.column_config.TextColumn(width="large"),
+                                    "Estado": st.column_config.TextColumn(width="small"),
+                                    "Códigos Presentes": st.column_config.NumberColumn(width="small", format="%d"),
+                                    "Códigos Faltantes": st.column_config.NumberColumn(width="small", format="%d"),
+                                    "Errores LAB": st.column_config.NumberColumn(width="small", format="%d")
+                                }
+                            )
+                            
+                            # Gráfico de progreso
+                            st.markdown("#### 📈 Distribución de Estados")
+                            col1, col2 = st.columns([2, 1])
+                            
+                            with col1:
+                                # Contar estados
+                                estados_count = {
+                                    "Completos": sum(1 for i in resultado_supervision['indicadores'].values() if i['cumple']),
+                                    "Parciales": sum(1 for i in resultado_supervision['indicadores'].values() if i['parcial']),
+                                    "Faltantes": sum(1 for i in resultado_supervision['indicadores'].values() if not i['cumple'] and not i['parcial'])
+                                }
+                                
+                                # Crear gráfico de barras
+                                fig = go.Figure(data=[
+                                    go.Bar(
+                                        x=list(estados_count.keys()),
+                                        y=list(estados_count.values()),
+                                        marker_color=['#28a745', '#ffc107', '#dc3545'],
+                                        text=list(estados_count.values()),
+                                        textposition='auto',
+                                    )
+                                ])
+                                
+                                fig.update_layout(
+                                    title="Indicadores por Estado",
+                                    showlegend=False,
+                                    height=300,
+                                    margin=dict(l=0, r=0, t=40, b=0)
+                                )
+                                
+                                st.plotly_chart(fig, use_container_width=True)
+                            
+                            with col2:
+                                # Resumen en métricas
+                                st.metric("Total Indicadores", resultado_supervision['metricas']['total_indicadores'])
+                                st.metric("Tasa de Éxito", f"{resultado_supervision['metricas']['porcentaje_cumplimiento']}%")
+                                total_errores = sum(len(i.get('errores_lab', [])) for i in resultado_supervision['indicadores'].values())
+                                st.metric("Total Errores LAB", total_errores)
+                        
+                        # Recomendaciones mejoradas
+                        if resultado_supervision['recomendaciones']:
+                            st.markdown("### 💡 Plan de Acción - Recomendaciones Priorizadas")
+                            
+                            # Crear pestañas para organizar las recomendaciones
+                            tab_paquete, tab_otros, tab_todos = st.tabs([
+                                "🚨 Paquete Integral Prioritario",
+                                "📋 Otros Indicadores",
+                                "📊 Vista Completa"
+                            ])
+                            
+                            # Separar recomendaciones por paquete integral
+                            rec_paquete = [r for r in resultado_supervision['recomendaciones'] if r.get('es_paquete_integral', False)]
+                            rec_otros = [r for r in resultado_supervision['recomendaciones'] if not r.get('es_paquete_integral', False)]
+                            
+                            with tab_paquete:
+                                if rec_paquete:
+                                    st.markdown("""
+                                    <div style="background-color: #ffebee; padding: 15px; border-radius: 10px; margin-bottom: 20px; border: 2px solid #ef5350;">
+                                        <h4>🚨 Códigos Prioritarios del Paquete Integral</h4>
+                                        <p><strong>IMPORTANTE:</strong> Estos códigos son obligatorios para cumplir con el Paquete de Atención Integral</p>
+                                    </div>
+                                    """, unsafe_allow_html=True)
+                                    
+                                    # Agrupar por componente del paquete
+                                    componentes_agrupados = {}
+                                    for rec in rec_paquete:
+                                        comp = rec.get('componente', 'Sin componente')
+                                        if comp not in componentes_agrupados:
+                                            componentes_agrupados[comp] = []
+                                        componentes_agrupados[comp].append(rec)
+                                    
+                                    # Mostrar por componente
+                                    for componente, recomendaciones in componentes_agrupados.items():
+                                        with st.expander(f"📦 {componente} ({len(recomendaciones)} códigos faltantes)", expanded=True):
+                                            for rec in recomendaciones:
+                                                col1, col2 = st.columns([3, 1])
+                                                with col1:
+                                                    if rec['prioridad'] == 'muy_alta':
+                                                        st.error(f"🔴 **{rec['codigo']}** - {rec['descripcion']}")
+                                                    else:
+                                                        st.warning(f"🟡 **{rec['codigo']}** - {rec['descripcion']}")
+                                                    
+                                                    if rec['tipo'] == 'error_lab_paquete':
+                                                        st.caption(f"⚠️ LAB incorrecto: '{rec['lab_actual']}' → Cambiar a: {', '.join(rec['lab_esperados'])}")
+                                                with col2:
+                                                    if rec['prioridad'] == 'muy_alta':
+                                                        st.markdown("**FALTANTE COMPLETO**")
+                                                    elif rec['tipo'] == 'error_lab_paquete':
+                                                        st.markdown("**CORREGIR LAB**")
+                                                    else:
+                                                        st.markdown("**COMPLETAR**")
+                                    
+                                    # Botón de descarga para paquete integral
+                                    st.markdown("---")
+                                    st.markdown("### 📥 Exportar Códigos del Paquete Integral")
+                                    
+                                    json_paquete = generar_json_paquete_integral(
+                                        df_filtrado[df_filtrado['pac_Numero_Documento'] == dni_buscar],
+                                        resultado_supervision['recomendaciones'],
+                                        curso_vida_supervision
+                                    )
+                                    
+                                    codigos_paquete = [r for r in resultado_supervision['recomendaciones'] 
+                                                     if r.get('es_paquete_integral', False) and 
+                                                     r['tipo'] in ['paquete_integral_faltante', 'paquete_integral_parcial']]
+                                    
+                                    if codigos_paquete:
+                                        col1, col2 = st.columns(2)
+                                        with col1:
+                                            st.info(f"📦 Se generarán {len(codigos_paquete)} códigos del Paquete Integral")
+                                        with col2:
+                                            json_str = json.dumps(json_paquete, indent=2, ensure_ascii=False)
+                                            st.download_button(
+                                                label="🚨 Descargar JSON Paquete Integral",
+                                                data=json_str,
+                                                file_name=f"paquete_integral_{dni_buscar}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                                                mime="application/json",
+                                                type="primary",
+                                                key="btn_paquete_integral"
+                                            )
+                                else:
+                                    st.success("✅ Todos los componentes del Paquete Integral están completos")
+                            
+                            with tab_otros:
+                                if rec_otros:
+                                    st.info("📋 Estos indicadores son adicionales y no forman parte del Paquete Integral obligatorio")
+                                    
+                                    for rec in rec_otros:
+                                        with st.container():
+                                            st.markdown(f"• **{rec['indicador']}**: {rec['mensaje']}")
+                                            if rec['tipo'] == 'error_lab':
+                                                st.caption(f"  LAB actual: '{rec['lab_actual']}' → Esperado: {', '.join(rec['lab_esperados'])}")
+                                else:
+                                    st.info("No hay recomendaciones adicionales fuera del Paquete Integral")
+                            
+                            with tab_todos:
+                                # Vista completa original
+                                st.markdown("""
+                                <div style="background-color: #e3f2fd; padding: 15px; border-radius: 10px; margin-bottom: 20px;">
+                                    <h4>📋 Plan de Acción Completo</h4>
+                                    <p>Todas las recomendaciones ordenadas por prioridad:</p>
+                                </div>
+                                """, unsafe_allow_html=True)
+                                
+                                # Agrupar recomendaciones por tipo
+                                componentes_faltantes = [r for r in resultado_supervision['recomendaciones'] if r['tipo'] == 'componente_faltante']
+                                errores_lab = [r for r in resultado_supervision['recomendaciones'] if r['tipo'] in ['error_lab', 'error_lab_paquete']]
+                                codigos_faltantes = [r for r in resultado_supervision['recomendaciones'] if r['tipo'] in ['codigo_faltante', 'paquete_integral_faltante', 'paquete_integral_parcial']]
+                                
+                                paso = 1
+                                
+                                # Paso 1: Corregir errores LAB (más urgente)
+                                if errores_lab:
+                                    st.markdown(f"### Paso {paso}: 🔴 Corregir Errores de LAB")
+                                    st.error("**Estos códigos tienen valores LAB incorrectos y deben corregirse primero:**")
+                                    
+                                    for error in errores_lab:
+                                        with st.container():
+                                            col1, col2, col3 = st.columns([2, 1, 1])
+                                            with col1:
+                                                st.markdown(f"**{error['codigo']}** - {error['indicador']}")
+                                            with col2:
+                                                st.markdown(f"LAB actual: **{error['lab_actual']}**")
+                                            with col3:
+                                                st.markdown(f"Cambiar a: **{', '.join(error['lab_esperados'])}**")
+                                    
+                                    paso += 1
+                                    st.markdown("---")
+                                
+                                # Paso 2: Completar componentes faltantes del paquete
+                                if componentes_faltantes:
+                                    st.markdown(f"### Paso {paso}: 📦 Completar Componentes del Paquete Integral")
+                                    st.warning("**Estos componentes son obligatorios para el paquete integral:**")
+                                    
+                                    for comp in componentes_faltantes:
+                                        st.markdown(f"- **{comp['componente']}**")
+                                    
+                                    paso += 1
+                                    st.markdown("---")
+                                
+                                # Paso 3: Agregar códigos faltantes
+                                if codigos_faltantes:
+                                    st.markdown(f"### Paso {paso}: ➕ Agregar Códigos Faltantes")
+                                    st.info("**Agregue estos códigos diagnósticos para completar los indicadores:**")
+                                
+                                    # Agrupar por indicador
+                                    codigos_por_indicador = {}
+                                    for cod in codigos_faltantes:
+                                        indicador = cod['indicador']
+                                        if indicador not in codigos_por_indicador:
+                                            codigos_por_indicador[indicador] = []
+                                        codigos_por_indicador[indicador].append(cod)
+                                    
+                                    for indicador, codigos in codigos_por_indicador.items():
+                                        with st.expander(f"📌 {indicador} ({len(codigos)} códigos)", expanded=True):
+                                            for cod in codigos:
+                                                lab_info = ""
+                                                if cod.get('lab_requerido'):
+                                                    lab_info = f" [LAB: {', '.join(cod['lab_requerido'])}]"
+                                                st.markdown(f"• **{cod['codigo']}** - {cod['descripcion']}{lab_info}")
+                            
+                            # Generar JSON de corrección
+                            st.markdown("### 📥 Exportar Correcciones")
+                            
+                            col_exp1, col_exp2 = st.columns(2)
+                            
+                            with col_exp1:
+                                # JSON de corrección solo con códigos faltantes
+                                json_correccion = generar_json_correccion_individual(
+                                    df_filtrado[df_filtrado['pac_Numero_Documento'] == dni_buscar],
+                                    resultado_supervision['recomendaciones'],
+                                    curso_vida_supervision
+                                )
+                                
+                                if json_correccion['pacientes'][0]['diagnosticos']:
+                                    st.info(f"📄 Se generarán {len(json_correccion['pacientes'][0]['diagnosticos'])} códigos de corrección")
+                                    
+                                    json_str = json.dumps(json_correccion, indent=2, ensure_ascii=False)
+                                    st.download_button(
+                                        label="💾 Descargar JSON de Corrección",
+                                        data=json_str,
+                                        file_name=f"correccion_{dni_buscar}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                                        mime="application/json",
+                                        type="primary"
+                                    )
+                                else:
+                                    st.success("✅ No hay códigos faltantes para generar")
+                            
+                            with col_exp2:
+                                # Reporte completo
+                                st.info("📊 Reporte detallado del paciente")
+                                
+                                # Crear reporte en texto
+                                reporte = f"""REPORTE DE SUPERVISIÓN INDIVIDUAL
+================================
+Fecha: {datetime.now().strftime('%d/%m/%Y %H:%M')}
+Paciente: {resultado_supervision['info_basica']['nombre']}
+DNI: {resultado_supervision['info_basica']['dni']}
+Edad: {resultado_supervision['info_basica']['edad']} años
+Curso de Vida: {curso_vida_supervision}
+
+RESUMEN DE CUMPLIMIENTO
+======================
+Paquete Integral: {'COMPLETO' if resultado_supervision['paquete_integral']['completo'] else 'INCOMPLETO'}
+Porcentaje General: {resultado_supervision['metricas']['porcentaje_cumplimiento']}%
+Indicadores Completos: {resultado_supervision['metricas']['completos']}/{resultado_supervision['metricas']['total_indicadores']}
+Indicadores Parciales: {resultado_supervision['metricas']['parciales']}
+Indicadores Faltantes: {resultado_supervision['metricas']['faltantes']}
+Errores LAB: {len(resultado_supervision['errores_lab'])}
+
+RECOMENDACIONES
+===============
+"""
+                                for rec in resultado_supervision['recomendaciones']:
+                                    reporte += f"\n[{rec['prioridad'].upper()}] {rec['mensaje']}"
+                                
+                                st.download_button(
+                                    label="📄 Descargar Reporte Completo",
+                                    data=reporte,
+                                    file_name=f"reporte_supervision_{dni_buscar}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                                    mime="text/plain"
+                                )
+                        
+                        else:
+                            st.success("✅ El paciente tiene todos los indicadores completos")
+                    
+                    else:
+                        st.error(f"❌ No se encontró el paciente con DNI: {dni_buscar}")
+                
+                else:
+                    st.warning("⚠️ Por favor ingrese un DNI válido de 8 dígitos")
+            
+            # Información de ayuda
+            with st.expander("ℹ️ Cómo usar la Supervisión Individual", expanded=False):
+                st.markdown("""
+                ### 📌 Instrucciones:
+                
+                1. **Selecciona el curso de vida** correspondiente al paciente
+                2. **Ingresa el DNI** del paciente (8 dígitos)
+                3. **Haz clic en "Buscar Paciente"**
+                
+                ### 📊 Interpretación de resultados:
+                
+                - **🟢 Verde**: Indicador completo con todos los códigos y LAB correctos
+                - **🟡 Amarillo**: Indicador parcial, faltan algunos códigos
+                - **🔴 Rojo**: Indicador no iniciado o con errores críticos
+                - **🔵 Azul**: Indicador con observaciones especiales
+                
+                ### 💡 Acciones disponibles:
+                
+                - **Descargar JSON de corrección**: Genera un archivo con solo los códigos faltantes
+                - **Descargar reporte completo**: Informe detallado del estado del paciente
+                - **Ver recomendaciones**: Sugerencias priorizadas para completar el paquete
+                """)
     
     else:
         # Instrucciones cuando no hay datos
